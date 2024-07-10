@@ -1,0 +1,2 @@
+# menu "argos-smd"
+rsource "argos-smd/Kconfig"

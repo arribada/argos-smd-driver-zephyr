@@ -1,0 +1,5 @@
+tests:
+  codec_tests.test_encoding_of_sensor_data:
+    platform_allow:
+      - adafruit_feather_nrf52840
+    tags: driver

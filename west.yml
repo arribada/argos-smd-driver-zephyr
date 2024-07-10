@@ -1,0 +1,22 @@
+manifest:
+  defaults:
+    revision: main
+
+  remotes:
+    - name: zephyr
+      url-base: https://github.com/zephyrproject-rtos/
+    - name: arribada
+      url-base: https://github.com/arribada/
+
+  projects:
+    - name: zephyr
+      remote: zephyr
+      path: zephyr
+      revision: v3.5.0
+      import:
+        name-allowlist:
+          - cmsis # required by the ARM port
+          - hal_nordic
+
+  self:
+    path: argos-smd-driver-zephyr
