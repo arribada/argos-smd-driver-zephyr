@@ -1,17 +1,31 @@
-# argos smd UHF RFID Reader Driver for Zephyr
+# Argos SMD Driver for Zephyr
 
-This is a Zephyr driver for the Sparkfun argos smd UHF RFID Reader, based on their [Arduino Library](https://github.com/sparkfun/SparkFun_Simultaneous_RFID_Tag_Reader_Library/tree/master).
+This is a Zephyr driver for the Argos SMD module based on STM32WL from Arribada. [Hardware repository](https://github.com/arribada/argos-smd-hw).
 
 ## Architecture
 
-The argos smd is a Serial Peripheral and is connected to the Zephyr host via UART. The driver uses the UART Polling API for sending data to the argos smd and the Interrupt API for receiving data.
+The Argos SMD module is a Serial Peripheral and is connected to the Zephyr host via UART. The driver uses the UART Polling API for sending data to the argos smd and the Interrupt API for receiving data.
+
 
 ### Commands
 
-Commands are sent to the M6E in the following format:
-
+Commands are sent to the ARGOS SMD module following the Kineis AT command:
+    - Commands start by AT+
+    - Answer start by '+' and finish by end of line
+    - Get command is terminated by "=?"   
+    - Set command is terminated by "=VALUE"
 ```bash
-HEADER,OP_CODE,DATA,SIZE,TIMEOUT,WAIT_FOR_RESPONSE
+# command availables:
+AT+PING=?
+AT+FW=?
+AT+ADDR=?
+AT+SN=?
+AT+ID=?
+AT+RCONF=?
+AT+TX='MGS'
+AT+PREPASS_EN=?
+AT+UDATE=?
+AT+ATXRP=?
 ```
 
 ## Setup
@@ -20,4 +34,5 @@ HEADER,OP_CODE,DATA,SIZE,TIMEOUT,WAIT_FOR_RESPONSE
 2. `cd argos-env`
 3. `west update`
 4. `cd argos-smd-driver-zephyr/examples/simple`
-5. To build for Pico with a Pico debugger - `west build -b rpi_pico -- -DOPENOCD=/usr/bin/openocd -DOPENOCD_DEFAULT_PATH=/usr/share/openocd/scripts -DRPI_PICO_DEBUG_ADAPTER=cmsis-dap`
+5. To build for adafruit feather nrf52840 - `west build -b adafruit_feather_nrf52840 --build-dir ./argos-env/argos-smd-driver-zephyr/examples/simple/build ./argos-env/argos-smd-driver-zephyr/examples/simple`
+6. To Flash with Segger Link - `west flash -d .\argos-env\argos-smd-driver-zephyr\examples\simple\build --skip-rebuild -i SEGGER_SN`

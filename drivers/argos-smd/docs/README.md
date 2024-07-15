@@ -14,7 +14,7 @@ The response
 
 ```text
    Request Argos firmware version
-   MGR_AT+FW=07c790a__0x1,Feb  5 2024_17:48:12
+   AT+FW=07c790a__0x1,Feb  5 2024_17:48:12
 
    Request Argos serial number
    +SN=SMD_01__TEST00
