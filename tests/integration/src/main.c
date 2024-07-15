@@ -12,10 +12,6 @@ const struct device *dev = DEVICE_DT_GET_ONE(arribada_argossmd);
 
 int main(void)
 {
-
-	argos_smd_stop_reading(dev);
-    argos_smd_set_baud(dev, 115200);
-
 	return 0;
 }
 
@@ -24,13 +20,13 @@ static int cmd_test_version(const struct shell *sh, size_t argc, char **argv)
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
 
-    if(argos_smd_get_version(dev)) {
+    if(argos_read_firmware_version(dev)) {
         shell_print(sh, "Error getting version");
         return ENODATA;
     } else {	
         struct argos_smd_data *data = (struct argos_smd_data *)dev->data;
         uint8_t *msg = data->response.data;
-        shell_print(sh, "v%d.%d.%d", msg[0], msg[1], msg[2]);
+        shell_print(sh, "%s", msg);
         return 0;
     }
 }
@@ -44,7 +40,21 @@ static int cmd_test_ping(const struct shell *sh, size_t argc, char **argv)
 
 	return 0;
 }
+static int cmd_test_smd(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
 
+    if(argos_read_ping(dev)) {
+        shell_print(sh, "Error getting version");
+        return ENODATA;
+    } else {	
+        struct argos_smd_data *data = (struct argos_smd_data *)dev->data;
+        uint8_t *msg = data->response.data;
+        shell_print(sh, "%s", msg);
+        return 0;
+    
+}
 static int cmd_test_params(const struct shell *sh, size_t argc,
                            char **argv)
 {

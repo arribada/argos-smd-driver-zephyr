@@ -4,6 +4,7 @@
 
 import logging
 from packaging import version
+import re
 
 from twister_harness import Shell
 
@@ -21,8 +22,16 @@ def test_shell_ping(shell: Shell):
     assert 'pong' in lines, 'expected response not found'
     logger.info('response is valid')
 
+
+def test_smd_ping(shell: Shell):
+    logger.info('send "ping" command to SMD')
+    lines = shell.exec_command('test smd')
+    assert '+OK' in lines, 'expected response not found'
+    logger.info('response is valid')
+    
 def test_shell_version(shell: Shell):
     logger.info('send "test version" command')
     lines = shell.exec_command('test version')
-    assert any([catch(lambda: version.parse(line)) for line in lines]), 'expected version not found'
+    expected_pattern = r'\+FW=[0-9a-f]{7}__0x[0-9a-f]+,\w{3}\s+\d{1,2}\s+\d{4}_\d{2}:\d{2}:\d{2}'
+    assert any(re.search(expected_pattern, line) for line in lines), 'expected response not found'
     logger.info('response is valid')
