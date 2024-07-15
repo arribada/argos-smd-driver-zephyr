@@ -1,33 +1,43 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 
-#ifndef argos_smd_H
-#define argos_smd_H
+#ifndef ARGOS_SMD_H
+#define ARGOS_SMD_H
 
 #define ARGOS_SMD_BUF_SIZE 255
 // List of commands supported by the module
-#define AT_FW "AT_FW"
-#define AT_ADDR "AT+ADDR"
-#define AT_SN "AT+SN"
-#define AT_ID "AT+ID"
-#define AT_RCONF "AT+RCONF"
-#define AT_TX "AT+TX"
+#define READ_CMD_SIZE_TO_ADD 2 // add "=?\r\n" and null terminator
+#define TX_MAX_LDA2_PAYLOAD_SIZE 192 // Bits
+#define TX_MAX_LDA2L_PAYLOAD_SIZE 196 // Bits
+#define TX_MAX_VLDA4_PAYLOAD_SIZE 24 // Bits
+#define TX_MAX_LDK_PAYLOAD_SIZE 152 // Bits
 
-// Number of ms before stop waiting for response from module
-#define COMMAND_TIME_OUT 2000
+// cmd availables
+#define AT_PING "AT+PING"    // Ping the module
+#define AT_FW "AT+FW"        // Get firmware version
+#define AT_ADDR "AT+ADDR"    // Get MAC address
+#define AT_SN "AT+SN"        // Get serial number
+#define AT_ID "AT+ID"        // Get device ID
+#define AT_RCONF "AT+RCONF"  // Get radio configuration
+#define AT_TX "AT+TX="       // Send raw data
+#define AT_PREPASS_EN "AT+PREPASS_EN" // Get/Set prepass 
+#define AT_UDATE "AT+UDATE"  // UTC datetime update
+#define AT_ATXRP "AT+ATXRP" // get/set repetition commands
+
+// Number of ms before stop waiting for
 
 // Define all the ways functions can return
 #define RESPONSE_PENDING               0
-#define ERROR_COMMAND_RESPONSE_TIMEOUT 1
-#define ERROR_CORRUPT_RESPONSE         2
-#define ERROR_CMD_LENGTH		       3
-#define RESPONSE_SUCCESS               4
-#define RESPONSE_FAIL                  5
-#define RESPONSE_STARTUP               6
+#define ERROR_CMD_LENGTH		       1
+#define ERROR_CMD_BUILD 		       2
+#define RESPONSE_SUCCESS               3
+#define RESPONSE_FAIL                  4
+#define RESPONSE_CLEAR	               5
+
 
 
 /* wait serial output with 1000ms timeout */
-#define CFG_ARGOS_SMD_SERIAL_TIMEOUT 1000
+#define CFG_ARGOS_SMD_SERIAL_TIMEOUT 3000
 
 // Set command to be transmitted
 typedef int (*argos_smd_send_command_t)(const struct device *dev, uint8_t *command,
@@ -106,6 +116,14 @@ struct argos_smd_config {
 int send_command(const struct device *dev, uint8_t *command, const uint8_t length, const bool timeout);
 
 /* Library Functions */
+/**
+ * @brief Ping the Argos SMD.
+ * This function sends the command "AT+PING=?" to check if Argos device is ready
+ *
+ * @param dev UART peripheral device.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_read_ping(const struct device *dev);
 
 /**
  * @brief Reads the firmware version of the Argos SMD.
@@ -154,6 +172,35 @@ int argos_read_id(const struct device *dev);
  * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
  */
 int argos_read_configuration(const struct device *dev);
+
+
+/**
+ * @brief Reads the prepass enable variable of the Argos SMD.
+ * This function sends the command "AT+PREPASS_EN=?" to the Argos SMD to request its configuration.
+ *
+ * @param dev UART peripheral device.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_read_prepass_enable(const struct device *dev);
+
+
+/**
+ * @brief Reads the UTC time configured
+ * This function sends the command "AT+UPDATE=?" to the Argos SMD to request its configuration.
+ *
+ * @param dev UART peripheral device.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_read_udate(const struct device *dev);
+
+/**
+ * @brief Reads the TX confiuration repetition configured
+ * This function sends the command "AT+ATXRP=?" to the Argos SMD to request its configuration.
+ *
+ * @param dev UART peripheral device.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_read_repetition_configured(const struct device *dev);
 
 /**
  * @brief Send an argos message from SMD module.

@@ -3,4 +3,4 @@ description: |
 
 compatible: "arribada,argossmd"
 
-include: [base.yaml, uart-device.yaml
+include: [base.yaml, uart-device.yaml]

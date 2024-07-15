@@ -8,10 +8,6 @@
 	chosen {
 		zephyr,console = &cdc_acm_uart0;
 	};
-	aliases {
-		smd-uart = &uart0;
-	};
-
 };
 
 &zephyr_udc0 {

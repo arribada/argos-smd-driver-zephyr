@@ -1,9 +1,9 @@
-config argos_smd
+config ARGOS_SMD
     bool "Enable argos smd peripheral"
     depends on UART_INTERRUPT_DRIVEN
 
-if argos_smd
-    module = argos_smd
-    module-str = argos smd
+if ARGOS_SMD
+    module = ARGOS_SMD
+    module-str = Argos Smd
     source "subsys/logging/Kconfig.template.log_config"
 endif
