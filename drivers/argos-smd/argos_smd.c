@@ -16,6 +16,7 @@
 #include <stdbool.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/drivers/gpio.h>
 
 #include <argos_smd.h>
 
@@ -83,8 +84,6 @@ static void uart_rx_handler(const struct device *dev, void *dev_smd)
 			//LOG_DBG("Received %d bytes - offset %d", len, offset);
 
 			while (len > 0) {
-				//LOG_DBG("Data: %X | Offset: %d", drv_data->response.data[offset],
-				//	offset);
 				if (drv_data->response.data[offset] == '+') 
 				{
 					drv_data->status = RESPONSE_PENDING;
@@ -189,6 +188,55 @@ int build_read_cmd(const char *cmd_define, char *full_command, size_t buffer_siz
 
     return 0; // Return success code
 }
+
+
+/**
+ * @brief wake up smd device
+ * 
+ * @param dev UART peripheral device.
+ * @return 0 on success, negative errno value on failure.
+ */
+int argos_wake_smd(const struct device *dev)
+{
+    struct argos_smd_config *cfg = (struct argos_smd_config *)dev->config;
+    int ret;
+    ret = gpio_pin_set_dt(&cfg->gpio_spec, 1);
+    if (ret)
+        return ret;
+    return ret;
+}
+/**
+ * @brief Shutdown or sleep smd device
+ * 
+ * @param dev UART peripheral device.
+ * @return 0 on success, negative errno value on failure.
+ */
+int argos_sleep_smd(const struct device *dev)
+{
+    struct argos_smd_config *cfg = (struct argos_smd_config *)dev->config;
+    int ret;
+    ret = gpio_pin_set_dt(&cfg->gpio_spec, 0);
+    if (ret)
+        return ret;
+    return ret;
+}
+/**
+ * 
+/**
+ * @brief Initializes GPIO for the Wakeup device.
+ * 
+ * @param dev UART peripheral device.
+ * @return 0 on success, negative errno value on failure.
+ */
+static int init_gpio(const struct device *dev)
+{
+    struct argos_smd_config *cfg = (struct argos_smd_config *)dev->config;
+    int ret;
+    ret = gpio_pin_configure_dt(&cfg->gpio_spec, GPIO_OUTPUT);
+    if (ret)
+        return ret;
+    return ret;
+}
 /**
  * @brief Initialize the argos smd.
  *
@@ -200,9 +248,20 @@ static int argos_smd_init(const struct device *dev)
 	struct argos_smd_data *drv_data = dev->data;
 
 	if (!device_is_ready(cfg->uart_dev)) {
-		LOG_ERR("UART device is not ready");
+        __ASSERT(false, "UART device is not ready");
 		return -ENODEV;
 	}
+
+    if (!device_is_ready(cfg->gpio_spec.port))
+    {
+        __ASSERT(false, "GPIO device not ready");
+        return -ENODEV;
+    }
+    if (init_gpio(dev))
+    {
+        __ASSERT(false, "Failed to initialize GPIO device.");
+        return -ENODEV;
+    }
 
 	argos_smd_uart_flush(cfg->uart_dev);
 
@@ -464,15 +523,16 @@ const static struct argos_smd_api api = {
 	.set_callback = user_set_command_callback,
 };
 
-#define ARGOS_SMD_DEFINE(inst)                                                                      \
-	static struct argos_smd_data argos_smd_data_##inst = {                                       \
+#define ARGOS_SMD_DEFINE(inst)                                                             \
+	static struct argos_smd_data argos_smd_data_##inst = {                                 \
 		.response.msg_len = 255,                                                           \
-	};                                                                                         \
-	static const struct argos_smd_config argos_smd_config_##inst = {                             \
+	};                                                                                     \
+	static const struct argos_smd_config argos_smd_config_##inst = {                       \
 		.uart_dev = DEVICE_DT_GET(DT_INST_BUS(inst)),                                      \
-	};                                                                                         \
-                                                                                                   \
-	DEVICE_DT_INST_DEFINE(inst, &argos_smd_init, NULL, &argos_smd_data_##inst,                   \
+        .gpio_spec = GPIO_DT_SPEC_INST_GET(inst, wakeup_gpios),                            \
+	};                                                                                     \
+                                                                                           \
+	DEVICE_DT_INST_DEFINE(inst, &argos_smd_init, NULL, &argos_smd_data_##inst,             \
 			      &argos_smd_config_##inst, POST_KERNEL, ARGOS_SMD_INIT_PRIORITY, &api);
 
 DT_INST_FOREACH_STATUS_OKAY(ARGOS_SMD_DEFINE)

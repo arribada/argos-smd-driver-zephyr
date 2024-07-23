@@ -1,5 +1,6 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
+#include <zephyr/drivers/gpio.h>
 
 #ifndef ARGOS_SMD_H
 #define ARGOS_SMD_H
@@ -33,6 +34,7 @@
 #define RESPONSE_SUCCESS               3
 #define RESPONSE_FAIL                  4
 #define RESPONSE_CLEAR	               5
+#define RESPONSE_LOG                   6
 
 
 
@@ -102,6 +104,7 @@ struct argos_smd_data {
 struct argos_smd_config {
 	struct argos_smd_data *data;
 	const struct device *uart_dev;
+	const struct gpio_dt_spec gpio_spec; 
 };
 
 /**
@@ -213,4 +216,19 @@ int argos_read_repetition_configured(const struct device *dev);
 int argos_send_message(const struct device *dev, const char *TXmessage);
 
 
+/**
+ * @brief wake up smd device
+ * 
+ * @param dev UART peripheral device.
+ * @return 0 on success, negative errno value on failure.
+ */
+int argos_wake_smd(const struct device *dev);
+
+/**
+ * @brief Shutdown or sleep smd device
+ * 
+ * @param dev UART peripheral device.
+ * @return 0 on success, negative errno value on failure.
+ */
+int argos_sleep_smd(const struct device *dev);
 #endif // argos_smd_PERIPHERAL_H

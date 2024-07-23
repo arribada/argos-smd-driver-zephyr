@@ -1,3 +1,7 @@
+menu "Argos SMD peripheral driver example"
+rsource "../../drivers/Kconfig"
+endmenu
+
 menu "Zephyr"
 source "Kconfig.zephyr"
 endmenu

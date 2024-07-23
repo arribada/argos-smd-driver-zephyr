@@ -51,6 +51,8 @@ int main(void)
 		/* Give CPU resources to low priority threads. */
 		k_sleep(K_MSEC(100));
 	}
+	
+	argos_wake_smd(dev_smd);
 	k_sleep(K_MSEC(1000));
 	argos_smd_set_callback(dev_smd, read_callback, NULL);
 
@@ -86,5 +88,6 @@ int main(void)
 
 	k_sleep(K_MSEC(3000));
 
+	argos_sleep_smd(dev_smd);
 	return 0;
 }

@@ -1,9 +1,11 @@
+menu "ARGOS SMD driver"
 config ARGOS_SMD
     bool "Enable argos smd peripheral"
-    depends on UART_INTERRUPT_DRIVEN
+    depends on UART_INTERRUPT_DRIVEN && GPIO
 
 if ARGOS_SMD
     module = ARGOS_SMD
     module-str = Argos Smd
     source "subsys/logging/Kconfig.template.log_config"
 endif
+endmenu

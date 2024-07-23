@@ -4,3 +4,10 @@ description: |
 compatible: "arribada,argossmd"
 
 include: [base.yaml, uart-device.yaml]
+  
+properties:
+  wakeup-gpios:
+    required: true
+    type: phandle-array
+    description: |
+      GPIO pin used to wakeup SMD device.

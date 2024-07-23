@@ -1,2 +1,5 @@
 # menu "argos-smd"
-rsource "argos-smd/Kconfig"
+# rsource "argos-smd/Kconfig"
+menu "Drivers"
+rsource "*/Kconfig"
+endmenu

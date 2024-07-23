@@ -36,5 +36,8 @@
 	
 	argossmd{
 		compatible = "arribada,argossmd";
+		status="okay";
+		label="argossmd_device";
+		wakeup-gpios=<&gpio0 26 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>; 
 	};
 };
