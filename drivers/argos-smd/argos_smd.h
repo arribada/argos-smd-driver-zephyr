@@ -14,13 +14,17 @@
 #define TX_MAX_LDK_PAYLOAD_SIZE 152 // Bits
 
 // cmd availables
+#define AT_VERSION "AT+VERSION" // Get AT command version
 #define AT_PING "AT+PING"    // Ping the module
 #define AT_FW "AT+FW"        // Get firmware version
 #define AT_ADDR "AT+ADDR"    // Get MAC address
 #define AT_SN "AT+SN"        // Get serial number
 #define AT_ID "AT+ID"        // Get device ID
-#define AT_RCONF "AT+RCONF"  // Get radio configuration
+#define AT_RCONF "AT+RCONF"  // Get/SET radio configuration
+#define AT_SAVE_RCONF "AT+SAVE_RCONF"  // SAVE RCONF to non-volatile memory
+#define AT_LPM "AT+LPM"  // GET/SET low power mode command
 #define AT_TX "AT+TX="       // Send raw data
+#define AT_CW "AT+CX="       // Set Continuous wave transmission command
 #define AT_PREPASS_EN "AT+PREPASS_EN" // Get/Set prepass 
 #define AT_UDATE "AT+UDATE"  // UTC datetime update
 #define AT_ATXRP "AT+ATXRP" // get/set repetition commands
@@ -29,13 +33,14 @@
 
 // Define all the ways functions can return
 #define RESPONSE_PENDING               0
+#define RESPONSE_SUCCESS               1
+#define RESPONSE_FAIL                  2
+#define RESPONSE_CLEAR	               3
+
+// Define ERROR_TYPE
+#define NO_ERROR		               0
 #define ERROR_CMD_LENGTH		       1
 #define ERROR_CMD_BUILD 		       2
-#define RESPONSE_SUCCESS               3
-#define RESPONSE_FAIL                  4
-#define RESPONSE_CLEAR	               5
-#define RESPONSE_LOG                   6
-
 
 
 /* wait serial output with 1000ms timeout */
@@ -168,13 +173,13 @@ int argos_read_id(const struct device *dev);
 
 
 /**
- * @brief Reads the configuration of the Argos SMD.
+ * @brief Reads the radio configuration of the Argos SMD.
  * This function sends the command "AT+RCONF=?" to the Argos SMD to request its configuration.
  *
  * @param dev UART peripheral device.
  * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
  */
-int argos_read_configuration(const struct device *dev);
+int argos_read_radio_configuration(const struct device *dev);
 
 
 /**

@@ -15,12 +15,22 @@ LOG_MODULE_REGISTER(main, CONFIG_APP_LOG_LEVEL);
 BUILD_ASSERT(DT_NODE_HAS_COMPAT(DT_CHOSEN(zephyr_console), zephyr_cdc_acm_uart),
 	     "Console device is not ACM CDC UART device");
 
-void array_to_string(uint8_t *buf, char *str, uint8_t len)
+/* void array_to_string(uint8_t *buf, char *str, uint8_t len)
 {
     for (int i = 0; i < len; i++) {
         str[i] = (char) buf[i];
     }
     str[len] = '\0'; // Null-terminate the string
+} */
+void array_to_string(const uint8_t *buf, char *str, uint8_t len, uint8_t str_size)
+{
+    // Ensure we don't write more than the buffer can handle
+    uint8_t copy_len = (len < (str_size - 1)) ? (str_size - 1) : len;
+    
+    for (int i = 0; i < copy_len; i++) {
+        str[i] = (char) buf[i];
+    }
+    str[copy_len] = '\0'; // Null-terminate the string
 }
 
 void read_callback(const struct device *dev_smd, void *user_data)
@@ -29,7 +39,8 @@ void read_callback(const struct device *dev_smd, void *user_data)
 	struct argos_smd_data *drv_data = argos_smd_dev->data;
 
 	char new_tag_str[ARGOS_SMD_BUF_SIZE + 1];
-	array_to_string(drv_data->response.data, new_tag_str, drv_data->response.len);
+	//array_to_string(drv_data->response.data, new_tag_str, drv_data->response.len);
+	array_to_string(drv_data->response.data, new_tag_str, drv_data->response.len, (uint8_t) sizeof(new_tag_str));
 	LOG_INF("Received response: %s", new_tag_str);
 }
 
@@ -71,7 +82,7 @@ int main(void)
 	argos_read_id(dev_smd);
 
 	k_sleep(K_MSEC(1000));
-	argos_read_configuration(dev_smd);
+	argos_read_radio_configuration(dev_smd);
 
 	k_sleep(K_MSEC(1000));
 	argos_read_prepass_enable(dev_smd);
@@ -82,7 +93,7 @@ int main(void)
 	k_sleep(K_MSEC(1000));
 	argos_read_repetition_configured(dev_smd);
 
-	k_sleep(K_MSEC(3000));
+	k_sleep(K_MSEC(1000));
 	char msg[9] = "FFFFFFFF";
 	argos_send_message(dev_smd, msg);
 
