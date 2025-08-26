@@ -8,6 +8,7 @@
 #define ARGOS_SMD_INIT_PRIORITY 60
 
 #include <errno.h>
+#include <stdio.h>
 
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
@@ -17,7 +18,7 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/logging/log.h>
 
-#include <argos_smd.h>
+#include <drivers/argos-smd/argos_smd.h>
 
 LOG_MODULE_REGISTER(ARGOS_SMD, CONFIG_ARGOS_SMD_LOG_LEVEL);
 
