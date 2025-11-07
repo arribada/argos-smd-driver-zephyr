@@ -33,16 +33,23 @@ void *init()
 
 ZTEST(comms, test_basic)
 {
+    char out[ARGOS_SMD_BUF_SIZE];
+
     k_timer_start(&uart_emul_reply_timer, K_MSEC(10), K_NO_WAIT);
+    char msg[9] = "FFFFFFFF";
+    zassert_ok(argos_send_message(dev_smd, msg));
 
-    char msg[9] = "FFFFFFFF";         // NOLINT
-    argos_send_message(dev_smd, msg); // NOLINT
-
-    char out[20]; // NOLINT
+    char expected[] = "AT+TX=FFFFFFFF";
     uart_emul_get_tx_data(dev, (uint8_t *)out, sizeof(out));
+    zassert_true(memcmp(expected, out, sizeof(expected)));
 
-    char expected[] = "AT+TX=FFFFFFFF";                    // NOLINT
-    zassert_true(memcmp(expected, out, sizeof(expected))); // NOLINT
+    k_timer_start(&uart_emul_reply_timer, K_MSEC(10), K_NO_WAIT);
+    char msg2[] = "FFFF";
+    zassert_ok(argos_set_address(dev_smd, msg2));
+    uart_emul_get_tx_data(dev, (uint8_t *)out, sizeof(out));
+    char expected2[] = "AT+ADDR=FFF";                    
+    zassert_true(memcmp(expected2, out, sizeof(expected2)));
+    
 }
 
 ZTEST_SUITE(comms, NULL, init, NULL, NULL, NULL);

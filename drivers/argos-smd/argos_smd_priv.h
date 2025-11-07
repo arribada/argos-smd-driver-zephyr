@@ -14,6 +14,7 @@ extern "C" {
 
 // List of commands supported by the module
 #define READ_CMD_SIZE_TO_ADD      2   // add "=?\r\n" and null terminator
+#define WRITE_CMD_SIZE_TO_ADD     3   // add "=...\r\n" and null terminator
 #define TX_MAX_LDA2_PAYLOAD_SIZE  192 // Bits
 #define TX_MAX_LDA2L_PAYLOAD_SIZE 196 // Bits
 #define TX_MAX_VLDA4_PAYLOAD_SIZE 24  // Bits

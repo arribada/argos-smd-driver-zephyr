@@ -15,6 +15,64 @@ extern "C" {
 typedef void (*argos_smd_callback_t)(uint8_t *buf, size_t size, void *user_data);
 
 /* Library Functions */
+/**
+ * @brief Sets the address of the Argos SMD.
+ * This function sends the command "AT+ADDR=<address>" to configure the device's address.
+ *
+ * @param dev Pointer to the device structure.
+ * @param address The address string to be set.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_set_address(const struct device *dev, const char *address);
+
+/**
+ * @brief Sets the serial number of the Argos SMD.
+ * This function sends the command "AT+SN=<serial_number>" to configure the device's serial number.
+ *
+ * @param dev Pointer to the device structure.
+ * @param serial_number The serial number string to be set.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_set_serial_number(const struct device *dev, const char *serial_number);
+
+/**
+ * @brief Sets the ID of the Argos SMD.
+ * This function sends the command "AT+ID=<id>" to configure the device's identifier.
+ *
+ * @param dev Pointer to the device structure.
+ * @param id The ID string to be set.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_set_id(const struct device *dev, const char *id);
+
+/**
+ * @brief Sets the radio configuration of the Argos SMD.
+ * This function sends the command "AT+RCONF=<rconf>" to configure the device's radio settings.
+ *
+ * @param dev Pointer to the device structure.
+ * @param rconf The radio configuration string to be set.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_set_configuration(const struct device *dev, const char *rconf);
+
+/**
+ * @brief Sets the datetime of the Argos SMD.
+ * This function sends the command "AT+UPDATE=<datetime>" to configure the device's UTC time.
+ *
+ * @param dev Pointer to the device structure.
+ * @param datetime The datetime string in UTC format to be set.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_set_udate(const struct device *dev, const char *datetime);
+
+/**
+ * @brief Sends a raw AT command to the Argos SMD.
+ * This function transmits the specified command string directly to the device.
+ *
+ * @param dev Pointer to the device structure.
+ * @param command The AT command string to send (e.g., "AT+PING=?").
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
 int argos_send_cmd(const struct device *dev, const char *command);
 
 /**
