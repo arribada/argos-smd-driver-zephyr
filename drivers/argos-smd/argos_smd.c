@@ -5,9 +5,7 @@
  */
 
 #define DT_DRV_COMPAT          arribada_argossmd
-#define ARGOS_SMD_INIT_PRIORITY 60
 
-#include <errno.h>
 #include <stdio.h>
 
 #include <zephyr/init.h>
@@ -18,25 +16,12 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/logging/log.h>
 
-#include <drivers/argos-smd/argos_smd.h>
+#include <argos-smd/argos_smd.h>
+#include "argos_smd_priv.h"
+
+#define ARGOS_SMD_INIT_PRIORITY 60
 
 LOG_MODULE_REGISTER(ARGOS_SMD, CONFIG_ARGOS_SMD_LOG_LEVEL);
-
-
-/**
- * @brief Set callback function to be called when a string is received.
- *
- * @param dev UART peripheral device.
- * @param callback New callback function.
- * @param user_data Data to be passed to the callback function.
- */
-static void user_set_command_callback(const struct device *dev, argos_smd_callback_t callback,
-				      void *user_data)
-{
-	struct argos_smd_data *data = (struct argos_smd_data *)dev->data;
-	data->callback = callback;
-	data->user_data = user_data;
-}
 
 /**
  * @brief Empty the RX buffer of the UART peripheral.
@@ -45,10 +30,11 @@ static void user_set_command_callback(const struct device *dev, argos_smd_callba
  */
 static void argos_smd_uart_flush(const struct device *dev)
 {
+	const struct argos_smd_config *cfg = dev->config;
 	struct argos_smd_data *drv_data = dev->data;
 	uint8_t buf;
 
-	while (uart_fifo_read(dev, &buf, 1) > 0) {
+	while (uart_fifo_read(cfg->uart_dev, &buf, 1) > 0) {
 		;
 	}
 	memset(&drv_data->response.data, 0, ARGOS_SMD_BUF_SIZE);
@@ -63,55 +49,43 @@ static void argos_smd_uart_flush(const struct device *dev)
  * @param dev_smd Driver device passed to provide access to buffers.
  */
 static void uart_rx_handler(const struct device *dev, void *dev_smd)
-{
+{	
 	const struct device *argos_smd_dev = dev_smd;
 	struct argos_smd_data *drv_data = argos_smd_dev->data;
 
-	int len = 0;
-	int offset = 0;
-
-	if (drv_data->status == RESPONSE_CLEAR) {
-		drv_data->response.len = 0;
-	}
-
-	offset = drv_data->response.len;
 	argos_smd_callback_t callback = drv_data->callback;
 
-	if ((uart_irq_update(dev) > 0) && (uart_irq_is_pending(dev) > 0)) {
-		if (uart_irq_rx_ready(dev)) {
+	while (uart_irq_update(dev) && uart_irq_rx_ready(dev)) {
+		uint8_t byte;
+		int len = uart_fifo_read(dev, &byte, sizeof(byte));
+		if (len <= 0) {
+			continue;
+		}
 
-			len = uart_fifo_read(dev, &drv_data->response.data[offset], 255 - offset);
-			//LOG_DBG("Received %d bytes - offset %d", len, offset);
+		if (byte == '+' && drv_data->status == RESPONSE_CLEAR) {
+			drv_data->status = RESPONSE_PENDING;
+			memset(drv_data->response.data, 0, sizeof(drv_data->response.data));
+			drv_data->response.len = 0;
+		}
 
-			while (len > 0) {
-				//LOG_DBG("Data: %X | Offset: %d", drv_data->response.data[offset],
-				//	offset);
-				if (drv_data->response.data[offset] == '+') 
-				{
-					drv_data->status = RESPONSE_PENDING;
+		if (drv_data->status == RESPONSE_PENDING) {
+			drv_data->response.len++;
+			size_t index = drv_data->response.len - 1;
+			drv_data->response.data[index] = byte;
+
+			if (byte == '\n') {
+				drv_data->status = RESPONSE_SUCCESS;
+				LOG_DBG("Response success.");
+				if (callback != NULL) {
+					callback(drv_data->response.data, drv_data->response.len, drv_data->user_data);
 				}
-				if ((drv_data->response.data[offset] == '\n') && (drv_data->status == RESPONSE_PENDING))
-                {
-					drv_data->status = RESPONSE_SUCCESS;
-                    LOG_DBG("Response success.");
-                    if (callback != NULL) {
-                        callback(dev, dev_smd);
-                    }
-                }
-
-				offset++;
-				len--;
-				drv_data->response.len = offset;
 			}
 		}
+		if (drv_data->response.len >= sizeof(drv_data->response.data)) {
+			drv_data->status = RESPONSE_FAIL;
+			continue;
+		}
 	}
-
-	if (offset > ARGOS_SMD_BUF_SIZE) {
-		drv_data->response.len = 0;
-		drv_data->status = RESPONSE_FAIL;
-		argos_smd_uart_flush(dev);
-		LOG_WRN("Response exceeds buffer, %d.", offset);
-	} 
 }
 
 /**
@@ -144,10 +118,9 @@ int send_command(const struct device *dev, uint8_t *command, const uint8_t lengt
 		data->status = RESPONSE_CLEAR;
 		uart_poll_out(cfg->uart_dev, (char)tx->data[i]);
 	}
-	//uart_poll_out(cfg->uart_dev, '\0');
+
 	uart_poll_out(cfg->uart_dev, '\r');
 	uart_poll_out(cfg->uart_dev, '\n');
-
 
 	if (timeout) {
 		while (data->status != RESPONSE_SUCCESS) {
@@ -162,6 +135,7 @@ int send_command(const struct device *dev, uint8_t *command, const uint8_t lengt
 	}
 	return 0;
 }
+
 /**
  * @brief Builds a full AT command by appending "=?" to the given command define.
  *
@@ -189,7 +163,9 @@ int build_read_cmd(const char *cmd_define, char *full_command, size_t buffer_siz
     strncat(full_command, "=?", buffer_size - strlen(full_command)); // Use strncat to prevent buffer overflow
 
     return 0; // Return success code
+
 }
+
 /**
  * @brief Initialize the argos smd.
  *
@@ -205,7 +181,7 @@ static int argos_smd_init(const struct device *dev)
 		return -ENODEV;
 	}
 
-	argos_smd_uart_flush(cfg->uart_dev);
+	argos_smd_uart_flush(dev);
 
 	drv_data->response.len = 0;
 	drv_data->status = RESPONSE_CLEAR;
@@ -214,6 +190,21 @@ static int argos_smd_init(const struct device *dev)
 	uart_irq_rx_enable(cfg->uart_dev);
 
 	return 0;
+}
+
+/**
+ * @brief Set callback function to be called when a string is received.
+ *
+ * @param dev UART peripheral device.
+ * @param callback New callback function.
+ * @param user_data Data to be passed to the callback function.
+ */
+void argos_smd_set_callback(const struct device *dev, argos_smd_callback_t callback,
+				      void *user_data)
+{
+	struct argos_smd_data *data = (struct argos_smd_data *)dev->data;
+	data->callback = callback;
+	data->user_data = user_data;
 }
 
 
@@ -424,56 +415,56 @@ int argos_read_repetition_configured(const struct device *dev) {
  * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
  */
 int argos_send_message(const struct device *dev, const char *TXmessage) {
-    // Check if the message size exceeds the maximum allowed size
     size_t message_length = strlen(TXmessage);
-    size_t max_length = TX_MAX_LDA2_PAYLOAD_SIZE / 8;
+    const size_t max_length = TX_MAX_LDA2_PAYLOAD_SIZE / 8;
     
     if (message_length > max_length) {
         LOG_ERR("TXmessage size exceeds the maximum allowed payload size. Message length: %zu, Allowed length: %zu.\n", message_length, max_length);
         return ERROR_CMD_LENGTH;
     }
 
-    // Calculate the required size for cmd array
     size_t cmd_size = sizeof(AT_TX) + message_length; 
 
-    // Allocate memory for the cmd array dynamically
-    char *cmd = malloc(cmd_size);
-    if (cmd == NULL) {
-        LOG_ERR("Failed to allocate memory for command.\n");
-        return -1;
-    }
+    char cmd[max_length];
 
-    // Format the command to send
     snprintf(cmd, cmd_size, "%s%s", AT_TX, TXmessage);
 
     LOG_INF("Send Argos message: %s\n", TXmessage);
     
-    // Send the command
     if (send_command(dev, cmd, cmd_size, true) != 0) {
         LOG_ERR("Failed to send the message command.\n");
-        free(cmd); // Free dynamically allocated memory
         return -1;
     }
 
-    // Free dynamically allocated memory
-    free(cmd);
+    return 0;
+}
+
+int argos_send_cmd(const struct device *dev, const char *command) {
+    size_t message_length = strlen(command);
+    const size_t max_length = ARGOS_SMD_BUF_SIZE;
+    
+    if (message_length > max_length) {
+        LOG_ERR("TXmessage size exceeds the maximum allowed payload size. Message length: %zu, Allowed length: %zu.\n", message_length, max_length);
+        return ERROR_CMD_LENGTH;
+    }
+    
+    if (send_command(dev, (uint8_t*)command, message_length, true) != 0) {
+        LOG_ERR("Failed to send the message command.\n");
+        return -1;
+    }
 
     return 0;
 }
-const static struct argos_smd_api api = {
-	// .send_command = send_command,
-	.set_callback = user_set_command_callback,
-};
+
 
 #define ARGOS_SMD_DEFINE(inst)                                                                      \
 	static struct argos_smd_data argos_smd_data_##inst = {                                       \
-		.response.msg_len = 255,                                                           \
 	};                                                                                         \
 	static const struct argos_smd_config argos_smd_config_##inst = {                             \
 		.uart_dev = DEVICE_DT_GET(DT_INST_BUS(inst)),                                      \
 	};                                                                                         \
                                                                                                    \
 	DEVICE_DT_INST_DEFINE(inst, &argos_smd_init, NULL, &argos_smd_data_##inst,                   \
-			      &argos_smd_config_##inst, POST_KERNEL, ARGOS_SMD_INIT_PRIORITY, &api);
+			      &argos_smd_config_##inst, POST_KERNEL, ARGOS_SMD_INIT_PRIORITY, NULL);
 
 DT_INST_FOREACH_STATUS_OKAY(ARGOS_SMD_DEFINE)

@@ -1,75 +1,21 @@
 #ifndef ARGOS_SMD_H
 #define ARGOS_SMD_H
 
-#include <zephyr/kernel.h>
+#include <stddef.h>
+#include <stdint.h>
+
 #include <zephyr/device.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define ARGOS_SMD_BUF_SIZE        255
-// List of commands supported by the module
-#define READ_CMD_SIZE_TO_ADD      2   // add "=?\r\n" and null terminator
-#define TX_MAX_LDA2_PAYLOAD_SIZE  192 // Bits
-#define TX_MAX_LDA2L_PAYLOAD_SIZE 196 // Bits
-#define TX_MAX_VLDA4_PAYLOAD_SIZE 24  // Bits
-#define TX_MAX_LDK_PAYLOAD_SIZE   152 // Bits
+#define ARGOS_SMD_BUF_SIZE 255
 
-// cmd availables
-#define AT_PING       "AT+PING"       // Ping the module
-#define AT_FW         "AT+FW"         // Get firmware version
-#define AT_ADDR       "AT+ADDR"       // Get MAC address
-#define AT_SN         "AT+SN"         // Get serial number
-#define AT_ID         "AT+ID"         // Get device ID
-#define AT_RCONF      "AT+RCONF"      // Get radio configuration
-#define AT_TX         "AT+TX="        // Send raw data
-#define AT_PREPASS_EN "AT+PREPASS_EN" // Get/Set prepass
-#define AT_UDATE      "AT+UDATE"      // UTC datetime update
-#define AT_ATXRP      "AT+ATXRP"      // get/set repetition commands
+typedef void (*argos_smd_callback_t)(uint8_t *buf, size_t size, void *user_data);
 
-// Number of ms before stop waiting for
-
-// Define all the ways functions can return
-#define RESPONSE_PENDING 0
-#define ERROR_CMD_LENGTH 1
-#define ERROR_CMD_BUILD  2
-#define RESPONSE_SUCCESS 3
-#define RESPONSE_FAIL    4
-#define RESPONSE_CLEAR   5
-
-/* wait serial output with 1000ms timeout */
-#define CFG_ARGOS_SMD_SERIAL_TIMEOUT 3000
-
-// Set command to be transmitted
-typedef int (*argos_smd_send_command_t)(const struct device *dev, uint8_t *command,
-					const uint8_t length, bool timeout);
-
-// Callback
-typedef void (*argos_smd_callback_t)(const struct device *dev, void *user_data);
-
-// Set the data callback function for the device
-typedef void (*argos_smd_set_callback_t)(const struct device *dev, argos_smd_callback_t callback,
-					 void *user_data);
-
-struct argos_smd_api {
-	// argos_smd_send_command_t send_command;
-	argos_smd_set_callback_t set_callback;
-};
-
-/**
- * @brief Set command to be transmitted.
- *
- * @param dev Pointer to the device structure.
- * @param command Command to be transmitted.
- * @param length Length of the command (excluding null byte).
- */
-// static inline void argos_smd_send_command(const struct device *dev, uint8_t *command,
-// 					 const uint8_t length, bool timeout)
-// {
-// 	struct argos_smd_api *api = (struct argos_smd_api *)dev->api;
-// 	return api->send_command(dev, command, length, timeout);
-// }
+/* Library Functions */
+int argos_send_cmd(const struct device *dev, const char *command);
 
 /**
  * @brief Set the data callback function for the device
@@ -78,47 +24,9 @@ struct argos_smd_api {
  * @param callback Callback function pointer.
  * @param user_data Pointer to data accessible from the callback function.
  */
-static inline void argos_smd_set_callback(const struct device *dev, argos_smd_callback_t callback,
-					  void *user_data)
-{
-	struct argos_smd_api *api = (struct argos_smd_api *)dev->api;
-	return api->set_callback(dev, callback, user_data);
-}
+void argos_smd_set_callback(const struct device *dev, argos_smd_callback_t callback,
+			    void *user_data);
 
-struct argos_smd_buf {
-	uint8_t data[ARGOS_SMD_BUF_SIZE];
-	size_t len;
-	size_t msg_len;
-};
-
-struct argos_smd_data {
-	uint8_t status;
-	struct argos_smd_buf command;
-	struct argos_smd_buf response;
-	bool has_response;
-
-	argos_smd_callback_t callback;
-	void *user_data;
-};
-
-struct argos_smd_config {
-	struct argos_smd_data *data;
-	const struct device *uart_dev;
-};
-
-/**
- * @brief Set the command to be transmitted by the UART peripheral.
- *
- * @param dev UART peripheral device.
- * @param command Command to be transmitted.
- * @param length Length of the command.
- * @param timeout Whether to wait for a response from the module.
- * @return int Status of the command.
- */
-int send_command(const struct device *dev, uint8_t *command, const uint8_t length,
-		 const bool timeout);
-
-/* Library Functions */
 /**
  * @brief Ping the Argos SMD.
  * This function sends the command "AT+PING=?" to check if Argos device is ready
@@ -192,7 +100,7 @@ int argos_read_prepass_enable(const struct device *dev);
 int argos_read_udate(const struct device *dev);
 
 /**
- * @brief Reads the TX confiuration repetition configured
+ * @brief Reads the TX configuration repetition configured
  * This function sends the command "AT+ATXRP=?" to the Argos SMD to request its configuration.
  *
  * @param dev UART peripheral device.
@@ -214,4 +122,4 @@ int argos_send_message(const struct device *dev, const char *TXmessage);
 }
 #endif
 
-#endif // argos_smd_PERIPHERAL_H
+#endif

@@ -1,0 +1,14 @@
+/ {
+	uart0: uart {
+		compatible = "zephyr,uart-emul";
+		current-speed = <115200>;
+		rx-fifo-size = <256>;
+		tx-fifo-size = <256>;
+		status = "okay";
+
+		argossmd {
+			compatible = "arribada,argossmd";
+		};
+	};
+
+};

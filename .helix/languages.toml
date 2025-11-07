@@ -1,0 +1,2 @@
+[language-server.clangd]
+args = ["--clang-tidy", "--compile-commands-dir=$APP_ROOT/", "--query-driver=/opt/toolchains/zephyr-sdk-*/arm-zephyr-eabi/bin/arm-zephyr-eabi-g*", "--malloc-trim", "--pch-storage=memory", "--header-insertion=never"]
