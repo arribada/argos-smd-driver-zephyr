@@ -372,7 +372,7 @@ int argos_set_id(const struct device *dev, const char* id) {
     int result = 0;
 
     LOG_INF("Setting Argos ID to %s", id);
-    if (build_write_cmd(AT_SN, id, cmd,  sizeof(cmd)) == 0) {
+    if (build_write_cmd(AT_ID, id, cmd,  sizeof(cmd)) == 0) {
         send_command(dev, cmd, sizeof(cmd), true);
     } else {
         LOG_ERR("Failed to build the command.\n");
@@ -382,12 +382,12 @@ int argos_set_id(const struct device *dev, const char* id) {
     return result;
 }
 
-int argos_set_radio_config(const struct device *dev, const char* rconf) {
+int argos_set_configuration(const struct device *dev, const char* rconf) {
     char cmd[ARGOS_SMD_BUF_SIZE];
     int result = 0;
 
     LOG_INF("Setting Argos radio config to %s", rconf);
-    if (build_write_cmd(AT_SN, rconf, cmd,  sizeof(cmd)) == 0) {
+    if (build_write_cmd(AT_RCONF, rconf, cmd,  sizeof(cmd)) == 0) {
         send_command(dev, cmd, sizeof(cmd), true);
     } else {
         LOG_ERR("Failed to build the command.\n");
@@ -398,12 +398,44 @@ int argos_set_radio_config(const struct device *dev, const char* rconf) {
 }
 
 
-int argos_set_datetime(const struct device *dev, const char* datetime) {
+int argos_set_prepass_enable(const struct device *dev, const char* prepass) {
+    char cmd[ARGOS_SMD_BUF_SIZE];
+    int result = 0;
+
+    LOG_INF("Setting Argos prepass enable to %s", prepass);
+    if (build_write_cmd(AT_PREPASS_EN, prepass, cmd,  sizeof(cmd)) == 0) {
+        send_command(dev, cmd, sizeof(cmd), true);
+    } else {
+        LOG_ERR("Failed to build the command.\n");
+        result = ERROR_CMD_BUILD;
+    }
+
+    return result;
+}
+
+
+int argos_set_repetition_configured(const struct device *dev, const char* atxpr) {
+    char cmd[ARGOS_SMD_BUF_SIZE];
+    int result = 0;
+
+    LOG_INF("Setting Argos ATXPR to %s", atxpr);
+    if (build_write_cmd(AT_ATXRP, atxpr, cmd,  sizeof(cmd)) == 0) {
+        send_command(dev, cmd, sizeof(cmd), true);
+    } else {
+        LOG_ERR("Failed to build the command.\n");
+        result = ERROR_CMD_BUILD;
+    }
+
+    return result;
+}
+
+
+int argos_set_udate(const struct device *dev, const char* datetime) {
     char cmd[ARGOS_SMD_BUF_SIZE];
     int result = 0;
 
     LOG_INF("Setting Argos Datetime to %s", datetime);
-    if (build_write_cmd(AT_SN, datetime, cmd,  sizeof(cmd)) == 0) {
+    if (build_write_cmd(AT_UDATE, datetime, cmd,  sizeof(cmd)) == 0) {
         send_command(dev, cmd, sizeof(cmd), true);
     } else {
         LOG_ERR("Failed to build the command.\n");
@@ -412,6 +444,7 @@ int argos_set_datetime(const struct device *dev, const char* datetime) {
 
     return result;
 }
+
 
 static int argos_smd_init(const struct device *dev)
 {

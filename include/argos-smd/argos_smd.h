@@ -56,6 +56,26 @@ int argos_set_id(const struct device *dev, const char *id);
 int argos_set_configuration(const struct device *dev, const char *rconf);
 
 /**
+ * @brief Sets the preass enable value  of the Argos SMD.
+ * This function sends the command "AT+PREPASS_EN=<prepass>" to configure the device.
+ *
+ * @param dev Pointer to the device structure.
+ * @param prepass The prepass string to be set.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_set_prepass_enable(const struct device *dev, const char *prepass);
+
+/**
+ * @brief Sets the repetition configuration of the Argos SMD.
+ * This function sends the command "AT+ATXRP=<atxpr>" to configure the device settings.
+ *
+ * @param dev Pointer to the device structure.
+ * @param atxpr The configuration string to be set.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_set_repetition_configured(const struct device *dev, const char *atxpr);
+
+/**
  * @brief Sets the datetime of the Argos SMD.
  * This function sends the command "AT+UPDATE=<datetime>" to configure the device's UTC time.
  *
