@@ -54,7 +54,7 @@ int main(void)
 	argos_read_id(dev_smd);
 
 	k_sleep(K_MSEC(1000));
-	argos_read_configuration(dev_smd);
+	argos_read_radioconf(dev_smd);
 
 	k_sleep(K_MSEC(1000));
 	argos_read_prepass_enable(dev_smd);
@@ -63,7 +63,7 @@ int main(void)
 	argos_read_udate(dev_smd);
 
 	k_sleep(K_MSEC(1000));
-	argos_read_repetition_configured(dev_smd);
+	argos_read_kmac(dev_smd);
 
 	k_sleep(K_MSEC(3000));
 	char msg[9] = "FFFFFFFF";

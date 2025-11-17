@@ -138,6 +138,22 @@ void argos_smd_set_callback(const struct device *dev, argos_smd_callback_t callb
 	data->user_data = user_data;
 }
 
+int argos_read_version(const struct device *dev) {
+    char cmd[sizeof(AT_VERSION) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
+    int result = 0;
+
+    // Build the command using the AT_FW define
+    LOG_INF("Request Argos version\n");
+    if (build_read_cmd(AT_VERSION, cmd, sizeof(cmd)) == 0) {
+        send_command(dev, cmd, sizeof(cmd), true);
+    } else {
+        LOG_ERR("Failed to build the read command.\n");
+        result = ERROR_CMD_BUILD;
+    }
+
+    return result;
+}
+
 int argos_read_ping(const struct device *dev) {
     char cmd[sizeof(AT_PING) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
     int result = 0;
@@ -185,6 +201,36 @@ int argos_read_address(const struct device *dev) {
     return result;
 }
 
+int argos_read_id(const struct device *dev) {
+    char cmd[sizeof(AT_ID) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; 
+    int result = 0;
+
+    LOG_INF("Request Argos ID\n");
+    if (build_read_cmd(AT_ID, cmd, sizeof(cmd)) == 0) {
+        send_command(dev, cmd, sizeof(cmd), true);
+    } else {
+        LOG_ERR("Failed to build the ID command.\n");
+        result = ERROR_CMD_BUILD;
+    }
+
+    return result;
+}
+
+int argos_read_seckey(const struct device *dev) {
+    char cmd[sizeof(AT_SECKEY) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; 
+    int result = 0;
+
+    LOG_INF("Request Argos security key\n");
+    if (build_read_cmd(AT_SECKEY, cmd, sizeof(cmd)) == 0) {
+        send_command(dev, cmd, sizeof(cmd), true);
+    } else {
+        LOG_ERR("Failed to build the read seckey command.\n");
+        result = ERROR_CMD_BUILD;
+    }
+
+    return result;
+}
+
 int argos_read_serial_number(const struct device *dev) {
     char cmd[sizeof(AT_SN) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
     int result = 0;
@@ -201,22 +247,7 @@ int argos_read_serial_number(const struct device *dev) {
 }
 
 
-int argos_read_id(const struct device *dev) {
-    char cmd[sizeof(AT_ID) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; 
-    int result = 0;
-
-    LOG_INF("Request Argos ID\n");
-    if (build_read_cmd(AT_ID, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the ID command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
-}
-
-int argos_read_configuration(const struct device *dev) {
+int argos_read_radioconf(const struct device *dev) {
     char cmd[sizeof(AT_RCONF) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
     int result = 0;
 
@@ -254,21 +285,77 @@ int argos_read_udate(const struct device *dev) {
     if (build_read_cmd(AT_UDATE, cmd, sizeof(cmd)) == 0) {
         send_command(dev, cmd, sizeof(cmd), true);
     } else {
-        LOG_ERR("Failed to build the update command.\n");
+        LOG_ERR("Failed to build the read udate command.\n");
         result = ERROR_CMD_BUILD;
 	}
 	return result;
 }
 
-int argos_read_repetition_configured(const struct device *dev) {
-    char cmd[sizeof(AT_ATXRP) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
+int argos_read_lpm(const struct device *dev) {
+    char cmd[sizeof(AT_LPM) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
     int result = 0;
 
-    LOG_INF("Request Argos TX repetition configured\n");
-    if (build_read_cmd(AT_ATXRP, cmd, sizeof(cmd)) == 0) {
+    LOG_INF("Request Argos low power mode configured\n");
+    if (build_read_cmd(AT_LPM, cmd, sizeof(cmd)) == 0) {
         send_command(dev, cmd, sizeof(cmd), true);
     } else {
-        LOG_ERR("Failed to build the read repetition configured command.\n");
+        LOG_ERR("Failed to build the read low power mode command.\n");
+        result = ERROR_CMD_BUILD;
+	}
+	return result;
+}
+
+int argos_read_mc(const struct device *dev) {
+    char cmd[sizeof(AT_MC) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
+    int result = 0;
+
+    LOG_INF("Request Argos read Mac counter\n");
+    if (build_read_cmd(AT_MC, cmd, sizeof(cmd)) == 0) {
+        send_command(dev, cmd, sizeof(cmd), true);
+    } else {
+        LOG_ERR("Failed to build the read mac counter command.\n");
+        result = ERROR_CMD_BUILD;
+	}
+	return result;
+}
+
+int argos_read_tcxo_wu(const struct device *dev) {
+    char cmd[sizeof(AT_TCXO_WU) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
+    int result = 0;
+
+    LOG_INF("Request Argos read TCXO warmup timer\n");
+    if (build_read_cmd(AT_TCXO_WU, cmd, sizeof(cmd)) == 0) {
+        send_command(dev, cmd, sizeof(cmd), true);
+    } else {
+        LOG_ERR("Failed to build the read TCXO warmup timer command.\n");
+        result = ERROR_CMD_BUILD;
+	}
+	return result;
+}
+
+int argos_read_kmac(const struct device *dev) {
+    char cmd[sizeof(AT_KMAC) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
+    int result = 0;
+
+    LOG_INF("Request Argos read KMAC profile \n");
+    if (build_read_cmd(AT_KMAC, cmd, sizeof(cmd)) == 0) {
+        send_command(dev, cmd, sizeof(cmd), true);
+    } else {
+        LOG_ERR("Failed to build the read KMAC profile command.\n");
+        result = ERROR_CMD_BUILD;
+	}
+	return result;
+}
+
+int argos_read_cw(const struct device *dev) {
+    char cmd[sizeof(AT_CW) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
+    int result = 0;
+
+    LOG_INF("Request Argos read CW configuration \n");
+    if (build_read_cmd(AT_CW, cmd, sizeof(cmd)) == 0) {
+        send_command(dev, cmd, sizeof(cmd), true);
+    } else {
+        LOG_ERR("Failed to build the read CW configuration command.\n");
         result = ERROR_CMD_BUILD;
 	}
 	return result;
@@ -350,7 +437,6 @@ int argos_set_address(const struct device *dev, const char* address) {
     return result;
 }
 
-
 int argos_set_serial_number(const struct device *dev, const char* serial_number) {
     char cmd[ARGOS_SMD_BUF_SIZE];
     int result = 0;
@@ -365,7 +451,6 @@ int argos_set_serial_number(const struct device *dev, const char* serial_number)
 
     return result;
 }
-
 
 int argos_set_id(const struct device *dev, const char* id) {
     char cmd[ARGOS_SMD_BUF_SIZE];
@@ -382,7 +467,7 @@ int argos_set_id(const struct device *dev, const char* id) {
     return result;
 }
 
-int argos_set_configuration(const struct device *dev, const char* rconf) {
+int argos_set_radioconf(const struct device *dev, const char* rconf) {
     char cmd[ARGOS_SMD_BUF_SIZE];
     int result = 0;
 
@@ -397,6 +482,20 @@ int argos_set_configuration(const struct device *dev, const char* rconf) {
     return result;
 }
 
+int argos_set_saveradioconf(const struct device *dev, const char* saveconf) {
+    char cmd[ARGOS_SMD_BUF_SIZE];
+    int result = 0;
+
+    LOG_INF("Save radio config to %s", saveconf);
+    if (build_write_cmd(AT_SAVE_RCONF, saveconf, cmd,  sizeof(cmd)) == 0) {
+        send_command(dev, cmd, sizeof(cmd), true);
+    } else {
+        LOG_ERR("Failed to build the command.\n");
+        result = ERROR_CMD_BUILD;
+    }
+
+    return result;
+}
 
 int argos_set_prepass_enable(const struct device *dev, const char* prepass) {
     char cmd[ARGOS_SMD_BUF_SIZE];
@@ -413,23 +512,6 @@ int argos_set_prepass_enable(const struct device *dev, const char* prepass) {
     return result;
 }
 
-
-int argos_set_repetition_configured(const struct device *dev, const char* atxpr) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
-    LOG_INF("Setting Argos ATXPR to %s", atxpr);
-    if (build_write_cmd(AT_ATXRP, atxpr, cmd,  sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
-}
-
-
 int argos_set_udate(const struct device *dev, const char* datetime) {
     char cmd[ARGOS_SMD_BUF_SIZE];
     int result = 0;
@@ -445,6 +527,80 @@ int argos_set_udate(const struct device *dev, const char* datetime) {
     return result;
 }
 
+int argos_set_lpm(const struct device *dev, const char* lpm) {
+    char cmd[ARGOS_SMD_BUF_SIZE];
+    int result = 0;
+
+    LOG_INF("Setting Argos Low power profile to %s", lpm);
+    if (build_write_cmd(AT_LPM, lpm, cmd,  sizeof(cmd)) == 0) {
+        send_command(dev, cmd, sizeof(cmd), true);
+    } else {
+        LOG_ERR("Failed to build the command.\n");
+        result = ERROR_CMD_BUILD;
+    }
+
+    return result;
+}
+
+int argos_set_mc(const struct device *dev, const char* mc) {
+    char cmd[ARGOS_SMD_BUF_SIZE];
+    int result = 0;
+
+    LOG_INF("Setting Argos Mac Counter to %s", mc);
+    if (build_write_cmd(AT_MC, mc, cmd,  sizeof(cmd)) == 0) {
+        send_command(dev, cmd, sizeof(cmd), true);
+    } else {
+        LOG_ERR("Failed to build the command.\n");
+        result = ERROR_CMD_BUILD;
+    }
+
+    return result;
+}
+
+int argos_set_tcxo_wu(const struct device *dev, const char* tcxo_wu) {
+    char cmd[ARGOS_SMD_BUF_SIZE];
+    int result = 0;
+
+    LOG_INF("Setting Argos TCXO warmup to %s", tcxo_wu);
+    if (build_write_cmd(AT_TCXO_WU, tcxo_wu, cmd,  sizeof(cmd)) == 0) {
+        send_command(dev, cmd, sizeof(cmd), true);
+    } else {
+        LOG_ERR("Failed to build the command.\n");
+        result = ERROR_CMD_BUILD;
+    }
+
+    return result;
+}
+
+int argos_set_kmac(const struct device *dev, const char* kmac) {
+    char cmd[ARGOS_SMD_BUF_SIZE];
+    int result = 0;
+
+    LOG_INF("Setting Argos KMAC to %s", kmac);
+    if (build_write_cmd(AT_KMAC, kmac, cmd,  sizeof(cmd)) == 0) {
+        send_command(dev, cmd, sizeof(cmd), true);
+    } else {
+        LOG_ERR("Failed to build the command.\n");
+        result = ERROR_CMD_BUILD;
+    }
+
+    return result;
+}
+
+int argos_set_cw(const struct device *dev, const char* cw) {
+    char cmd[ARGOS_SMD_BUF_SIZE];
+    int result = 0;
+
+    LOG_INF("Setting Argos set Continuous wave RF test to %s", cw);
+    if (build_write_cmd(AT_CW, cw, cmd,  sizeof(cmd)) == 0) {
+        send_command(dev, cmd, sizeof(cmd), true);
+    } else {
+        LOG_ERR("Failed to build the command.\n");
+        result = ERROR_CMD_BUILD;
+    }
+
+    return result;
+}
 
 static int argos_smd_init(const struct device *dev)
 {

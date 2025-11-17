@@ -53,10 +53,21 @@ int argos_set_id(const struct device *dev, const char *id);
  * @param rconf The radio configuration string to be set.
  * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
  */
-int argos_set_configuration(const struct device *dev, const char *rconf);
+int argos_set_radioconf(const struct device *dev, const char *rconf);
 
 /**
- * @brief Sets the preass enable value  of the Argos SMD.
+ * @brief Sets the save radio configuration of the Argos SMD.
+ * This function sends the command "AT+SAVE_RCONF=<saveconf>" to configure the device's radio settings.
+ * This function is not required anymore should be deleted
+ *
+ * @param dev Pointer to the device structure.
+ * @param saveconf Boolean 1 to save
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_set_saveradioconf(const struct device *dev, const char* saveconf);
+
+/**
+ * @brief Sets the prepass enable value  of the Argos SMD.
  * This function sends the command "AT+PREPASS_EN=<prepass>" to configure the device.
  *
  * @param dev Pointer to the device structure.
@@ -66,14 +77,44 @@ int argos_set_configuration(const struct device *dev, const char *rconf);
 int argos_set_prepass_enable(const struct device *dev, const char *prepass);
 
 /**
- * @brief Sets the repetition configuration of the Argos SMD.
- * This function sends the command "AT+ATXRP=<atxpr>" to configure the device settings.
+ * @brief Sets the LPM mode value  of the Argos SMD.
+ * This function sends the command "AT+LPM=<lpm>" to configure the device.
  *
  * @param dev Pointer to the device structure.
- * @param atxpr The configuration string to be set.
+ * @param lpm The LPM mode string to be set. 0 NONE, 1 SLEEP, 2 STOP, 3 STANDBY, 4 SHUTDOWN
  * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
  */
-int argos_set_repetition_configured(const struct device *dev, const char *atxpr);
+int argos_set_lpm(const struct device *dev, const char* lpm);
+
+/**
+ * @brief Sets the Mac counter value of the Argos SMD.
+ * This function sends the command "AT+MC=<mc>" to configure the device.
+ *
+ * @param dev Pointer to the device structure.
+ * @param mc The MC mode string to be set.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_set_mc(const struct device *dev, const char* mc);
+
+/**
+ * @brief Sets the TCXO Warmup timer value of the Argos SMD.
+ * This function sends the command "AT+TCXO_WU=<tcxo_wu>" to configure the device.
+ *
+ * @param dev Pointer to the device structure.
+ * @param tcxo_wu The TCXO Warmup timer string to be set.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_set_tcxo_wu(const struct device *dev, const char* tcxo_wu);
+
+/**
+ * @brief Sets the KMAC profile value of the Argos SMD.
+ * This function sends the command "AT+KMAC=<kmac>" to configure the device.
+ *
+ * @param dev Pointer to the device structure.
+ * @param kmac The KMAC profile string to be set.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_set_kmac(const struct device *dev, const char* kmac);
 
 /**
  * @brief Sets the datetime of the Argos SMD.
@@ -84,6 +125,21 @@ int argos_set_repetition_configured(const struct device *dev, const char *atxpr)
  * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
  */
 int argos_set_udate(const struct device *dev, const char *datetime);
+
+/**
+ * @brief Sets the Continous wave RF test of the Argos SMD.
+ * This function sends the command "AT+CW=<cw>" to configure the device. 
+ * <cw> should be in the format: "<modulation>,<frequency>,<power>,<duration>"
+ * <modulation>: 1 = CW, 2 = LDA2, 3 = LDA2L, 4 = VLDA4, 5 = LDK, 6 = HDA4, 0 = NONE
+ * <frequency>: Frequency in Hz (e.g., 434000000 for 434 MHz)
+ * <power>: Power level in dBm (e.g., 14)
+ * <duration>: Duration in milliseconds
+ *
+ * @param dev Pointer to the device structure.
+ * @param cw The continuous wave RF test string to be set.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_set_cw(const struct device *dev, const char *cw);
 
 /**
  * @brief Sends a raw AT command to the Argos SMD.
@@ -104,6 +160,16 @@ int argos_send_cmd(const struct device *dev, const char *command);
  */
 void argos_smd_set_callback(const struct device *dev, argos_smd_callback_t callback,
 			    void *user_data);
+
+
+/**
+ * @brief Read version of Argos SMD.
+ * This function sends the command "AT+VERSION=?" to check if Argos device is ready
+ *
+ * @param dev UART peripheral device.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_read_version(const struct device *dev);
 
 /**
  * @brief Ping the Argos SMD.
@@ -151,13 +217,22 @@ int argos_read_serial_number(const struct device *dev);
 int argos_read_id(const struct device *dev);
 
 /**
+ * @brief Reads the Secrete Key of the Argos SMD.
+ * This function sends the command "AT+SECKEY=?" to the Argos SMD to request its SECKEY.
+ *
+ * @param dev UART peripheral device.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_read_seckey(const struct device *dev);
+
+/**
  * @brief Reads the configuration of the Argos SMD.
  * This function sends the command "AT+RCONF=?" to the Argos SMD to request its configuration.
  *
  * @param dev UART peripheral device.
  * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
  */
-int argos_read_configuration(const struct device *dev);
+int argos_read_radioconf(const struct device *dev);
 
 /**
  * @brief Reads the prepass enable variable of the Argos SMD.
@@ -178,13 +253,49 @@ int argos_read_prepass_enable(const struct device *dev);
 int argos_read_udate(const struct device *dev);
 
 /**
- * @brief Reads the TX configuration repetition configured
- * This function sends the command "AT+ATXRP=?" to the Argos SMD to request its configuration.
+ * @brief Reads the Low Power Profile configured
+ * This function sends the command "AT+LPM=?" to the Argos SMD to request its LPM mode.
  *
  * @param dev UART peripheral device.
  * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
  */
-int argos_read_repetition_configured(const struct device *dev);
+int argos_read_lpm(const struct device *dev);
+
+/**
+ * @brief Reads the Mac Counter configured
+ * This function sends the command "AT+MC=?" to the Argos SMD to request its MC.
+ *
+ * @param dev UART peripheral device.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_read_mc(const struct device *dev);
+
+/**
+ * @brief Reads the TCXO Warmup timer configured
+ * This function sends the command "AT+TCXO_WU=?" to the Argos SMD to request its TCXO Warmup.
+ *
+ * @param dev UART peripheral device.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_read_tcxo_wu(const struct device *dev);
+
+/**
+ * @brief Reads the KMAC profile configured
+ * This function sends the command "AT+KMAC=?" to the Argos SMD to request its KMAC profile.
+ *
+ * @param dev UART peripheral device.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_read_kmac(const struct device *dev);
+
+/**
+ * @brief Reads the CW used
+ * This function sends the command "AT+CW=?" to the Argos SMD to request its CW configuration.
+ *
+ * @param dev UART peripheral device.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_read_cw(const struct device *dev);
 
 /**
  * @brief Send an argos message from SMD module.

@@ -3,7 +3,7 @@
 	"build": {
 		"dockerfile": "Dockerfile",
 		"context": "../"
-	}
+	},
 	"remoteUser": "user",
 	"onCreateCommand": "bash -c 'west update'",
 	"postStartCommand": "bash",
@@ -27,15 +27,15 @@
     "runArgs": [
     	"--privileged",
     	"-v", "/dev:/dev"
-    ],
-    "mounts" : [
-        {
-            "source": "${localEnv:SSH_AUTH_SOCK}",
-            "target": "${localEnv:SSH_AUTH_SOCK}",
-            "type": "bind"
-        }
-    ],
-    "remoteEnv": {
-        "SSH_AUTH_SOCK": "${localEnv:SSH_AUTH_SOCK}",
-    }
+    ]// Optional SSH agent forwarding,
+    // "mounts" : [
+    //     {
+    //         "source": "${localEnv:SSH_AUTH_SOCK}",
+    //         "target": "/ssh-agent",
+    //         "type": "bind"
+    //     }
+    // ],
+    // "remoteEnv": {
+    //     "SSH_AUTH_SOCK": "/ssh-agent",
+    // }
 }    

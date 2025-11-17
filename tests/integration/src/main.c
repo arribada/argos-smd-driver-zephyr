@@ -46,7 +46,7 @@ static int cmd_test_smd(const struct shell *sh, size_t argc, char **argv)
 	ARG_UNUSED(argv);
 
     if(argos_read_ping(dev)) {
-        shell_print(sh, "Error getting version");
+        shell_print(sh, "Error getting ping");
         return ENODATA;
     } else {	
         struct argos_smd_data *data = (struct argos_smd_data *)dev->data;
