@@ -18,3 +18,7 @@ docs/latex/*
 .pytest_cache
 __pycache__
 .vscode*
+
+.cache/
+.Trash-1000
+compile_commands.json
