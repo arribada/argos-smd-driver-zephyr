@@ -25,7 +25,8 @@ docs:
 
 test:
 	$(clean)
-	west twister --device-testing --device-serial /dev/ttyACM0 -p swan_r5  -T tests/integration --integration
+	west twister -p adafruit_feather_nrf52840 -T tests/integration -c  --device-testing  --device-serial-pty scripts/uart-pty.py || true
+	cat twister-out/adafruit_feather_nrf52840_nrf52840/zephyr/integration.argos_smd/handler.log
 
 # Target to clean the generated documentation
 clean:

@@ -26,16 +26,17 @@
     "workspaceFolder": "/home/user/west-workspace/argos-smd-driver-zephyr",
     "runArgs": [
     	"--privileged",
-    	"-v", "/dev:/dev"
-    ]// Optional SSH agent forwarding,
-    // "mounts" : [
-    //     {
-    //         "source": "${localEnv:SSH_AUTH_SOCK}",
-    //         "target": "/ssh-agent",
-    //         "type": "bind"
-    //     }
-    // ],
-    // "remoteEnv": {
-    //     "SSH_AUTH_SOCK": "/ssh-agent",
-    // }
+    	"-v", "/dev:/dev",
+		"--group-add=27"
+    ],
+    "mounts" : [
+        {
+            "source": "${localEnv:SSH_AUTH_SOCK}",
+            "target": "/ssh-agent",
+            "type": "bind"
+        }
+    ],
+    "remoteEnv": {
+        "SSH_AUTH_SOCK": "/ssh-agent"
+    }
 }    
