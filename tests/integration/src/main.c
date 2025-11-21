@@ -10,8 +10,14 @@ void array_to_string(uint8_t *buf, char *str, uint8_t len)
 {
 	for (int i = 0; i < len; i++) {
 		str[i] = (char)buf[i];
+
+		if (str[i] == '\n' || str[i] == '\r') {
+			str[i] = '\0';
+			return;
+		}
+
 	}
-	str[len-1] = '\0'; // Remove renew line and null-terminate the string
+	str[len] = '\0';
 }
 
 char response[ARGOS_SMD_BUF_SIZE];
@@ -19,7 +25,7 @@ char response[ARGOS_SMD_BUF_SIZE];
 void read_callback(uint8_t *buf, size_t len, void *user_data)
 {
 	array_to_string(buf, response, len);
-	TC_PRINT("%s", response);
+	TC_PRINT("Response:%s\n", response);
 }
 
 
@@ -27,11 +33,11 @@ ZTEST(argos_smd, test_write)
 {
 	zassert_ok(argos_set_address(dev, "00000000"));
 	zassert_ok(argos_read_address(dev));
-  zassert_equal(strncmp("+ADDR=000000", response, strlen("+ADDR=000000")), 0); 
-
+  zassert_equal(strcmp("+ADDR=00000000", response), 0, "%s", response);
+   
 	zassert_ok(argos_set_address(dev, "abcdef01"));
 	zassert_ok(argos_read_address(dev));
-  zassert_equal(strncmp("+ADDR=abcdef01", response, strlen("+ADDR=abcdef01")), 0); 
+  zassert_equal(strcmp("+ADDR=abcdef01", response), 0); 
 }
 
 
