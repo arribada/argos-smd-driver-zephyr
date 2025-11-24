@@ -24,8 +24,8 @@ jobs:
         run: |
           cd $APP_ROOT
           mkdir $APP_ROOT/scripts
-          mv $GITHUB_WORKSPACE/scripts/setup-ci-env.sh scripts 
-          ./scripts/setup-ci-env.sh
+          mv $GITHUB_WORKSPACE/scripts/setup-ci-env.sh scripts
+          bash scripts/setup-ci-env.sh
 
       - name: Build Docs
         run: make docs
