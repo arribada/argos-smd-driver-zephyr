@@ -63,7 +63,7 @@ ZTEST_SUITE(argos_smd, NULL, setup, NULL, NULL, NULL);
 // before twister starts looking at it
 int uart_delay()
 {
-    k_busy_wait(1000000); // 1s delay;
+    k_busy_wait(5000000); // 5s delay;
     return 0;
 }
 

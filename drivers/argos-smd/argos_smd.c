@@ -50,19 +50,19 @@ static void uart_rx_handler(const struct device *dev, void *dev_smd)
 			continue;
 		}
 
-		if (byte == '+' && drv_data->status == RESPONSE_CLEAR) {
-			drv_data->status = RESPONSE_PENDING;
+		if (byte == '+' && atomic_get(&drv_data->status) == RESPONSE_CLEAR) {
+      atomic_set(&drv_data->status, RESPONSE_PENDING);
 			memset(drv_data->response.data, 0, sizeof(drv_data->response.data));
 			drv_data->response.len = 0;
 		}
 
-		if (drv_data->status == RESPONSE_PENDING) {
+		if ( atomic_get(&drv_data->status) == RESPONSE_PENDING) {
 			drv_data->response.len++;
 			size_t index = drv_data->response.len - 1;
 			drv_data->response.data[index] = byte;
 
 			if (byte == '\n') {
-				drv_data->status = RESPONSE_SUCCESS;
+        atomic_set(&drv_data->status, RESPONSE_SUCCESS);
 				LOG_DBG("Response success.");
 				if (callback != NULL) {
 					callback(drv_data->response.data, drv_data->response.len, drv_data->user_data);
@@ -70,7 +70,7 @@ static void uart_rx_handler(const struct device *dev, void *dev_smd)
 			}
 		}
 		if (drv_data->response.len >= sizeof(drv_data->response.data)) {
-			drv_data->status = RESPONSE_FAIL;
+      atomic_set(&drv_data->status, RESPONSE_FAIL);
 			continue;
 		}
 	}
@@ -90,7 +90,7 @@ int send_command(const struct device *dev, uint8_t *command, const uint8_t lengt
 	tx->len = length;
 	__ASSERT(tx->len <= 255, "Command length too long.");
 
-	data->status = RESPONSE_CLEAR;
+  atomic_set(&data->status, RESPONSE_CLEAR);
 
 	for (size_t i = 0; i < tx->len; i++) {
 		uart_poll_out(cfg->uart_dev, (char)tx->data[i]);
@@ -99,10 +99,10 @@ int send_command(const struct device *dev, uint8_t *command, const uint8_t lengt
 	uart_poll_out(cfg->uart_dev, '\r');
 
 	if (timeout) {
-		while (data->status != RESPONSE_SUCCESS) {
+		while (atomic_get(&data->status) != RESPONSE_SUCCESS) {
 			if (timeout_in_ms < 0) {
 				LOG_WRN("Command timeout.");
-                data->status = RESPONSE_CLEAR;
+        atomic_set(&data->status, RESPONSE_CLEAR);
 				return -ETIMEDOUT;
 			}
 			timeout_in_ms -= 10;
@@ -625,7 +625,7 @@ static int argos_smd_init(const struct device *dev)
 	argos_smd_uart_flush(dev);
 
 	drv_data->response.len = 0;
-	drv_data->status = RESPONSE_CLEAR;
+	atomic_set(&drv_data->status, RESPONSE_CLEAR);
 
 	uart_irq_callback_user_data_set(cfg->uart_dev, uart_rx_handler, (void*) dev);
 	uart_irq_rx_enable(cfg->uart_dev);
