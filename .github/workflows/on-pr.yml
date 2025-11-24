@@ -1,0 +1,49 @@
+name: Docs and Tests
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:   
+  Build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        working-directory: ${{ env.APP_ROOT }}
+
+    steps:   
+      - name: Check out repository code
+        uses: actions/checkout@v4
+        with:
+            fetch-depth: 0
+
+      - name: Setup Env
+        run: |
+          mv ${APP_ROOT}/scripts/setup-ci-env.sh
+          ./scripts/setup-ci-env.sh
+
+      - name: Build Docs
+        run: make docs
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs
+          path: ${{ env.APP_ROOT }} /docs/build/html/
+
+      - name: Run Tests
+        run: make test
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: twister_out
+          path: ${{ env.APP_ROOT }}/twister-out/

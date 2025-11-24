@@ -2,6 +2,9 @@
 
 This is a Zephyr driver for the Argos SMD module based on STM32WL from Arribada. [Hardware repository](https://github.com/arribada/argos-smd-hw). The driver is compatible with both the Arogs SMD Module and the Argos SMD Wing.
 
+## Note Before Usage
+
+Before you can transmit any data from your Argos SMD Module/Wing you must setup a [Argos CLS Account](https://www.argos-system.org/get-started/) to get your ID, Address and Key.
 
 ## Integrating into your Application
 
@@ -23,7 +26,7 @@ manifest:
         name-allowlist:
           - cmsis_6    # required by the ARM port
           - hal_nordic # required for Nordic
-          - segger
+          - segger     # Required for RTT
     - name: argos-smd-driver-zephyr
       remote: arribada
       revision: v1.0.0
@@ -51,30 +54,26 @@ Now add the driver to your DTS, or a create an overlay:
 };
 ```
 
-You can now add `#include <argos-smd/argos_smd.h>` to your file and use the API outlined in the [docs]().
-
-// TODO: HOST AND LINK DOCS
-
-See `samples/read_and_write` for an example. 
+You can now add `#include <argos-smd/argos_smd.h>` to you code and use the API outlined in the [docs](https://arribada.github.io/argos-smd-driver-zephyr). Also see `samples/read_and_write` for an basic example.
 
 ## Architecture
 
-The Argos SMD module is a Serial Peripheral and is connected to the Zephyr host via UART. The driver uses the UART Polling API for sending data to the argos smd and the Interrupt API for receiving data. The SMD is connected by UART at a baud of 9600.
+The Argos SMD module is a Serial Peripheral and is connected to the Zephyr host via UART at a baudrate of 9600. The driver uses the UART Polling API for sending data to the argos smd and the Interrupt API for receiving data.
 
+## Contributing/Developement  
 
-## Contributing/Developement Setup  
-
-### Commands
 ```
 # All run in the root directory of the project
 
-# Builds and run local tests
+# Builds all test and run local tests
 make 
 
 # Builds documentation
 make docs 
 
-# Builds and runs targets tests
-make target_test
+# Same as `make`
+make test
 
+# Builds and runs target based tests
+make target_test
 ```

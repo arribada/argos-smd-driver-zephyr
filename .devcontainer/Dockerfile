@@ -43,6 +43,7 @@ RUN <<EOF
 		dfu-util \
 		diffstat \
 		dos2unix \
+		doxygen \
 		file \
 		flex \
 		g++ \
