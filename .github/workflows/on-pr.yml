@@ -13,6 +13,9 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        working-directory: /home/user/west-workspace/${{ github.event.repository.name }}
 
     steps:   
       - name: Check out repository code
@@ -22,9 +25,16 @@ jobs:
 
       - name: Setup Env
         run: |
-          cd $APP_ROOT
-          mv $GITHUB_WORKSPACE/scripts/setup-ci-env.sh scripts/setup-ci-env.sh
-          bash scripts/setup-ci-env.sh
+          mv $GITHUB_WORKSPACE/* $APP_ROOT
+          mv $GITHUB_WORKSPACE/.[!.]* $APP_ROOT
+
+          chmod 777 -R $APP_ROOT
+
+          git config --global --add safe.directory "*"
+          git config --global core.sshCommand "ssh -o StrictHostKeyChecking=accept-new"
+
+          echo "ZEPHYR_SDK_INSTALL_DIR=/opt/toolchains/zephyr-sdk-$ZSDK_VERSION" >> $GITHUB_ENV
+          west update
 
       - name: Build Docs
         run: make docs
