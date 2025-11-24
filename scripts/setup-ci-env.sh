@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+cd $APP_ROOT
+
+mkdir $APP_ROOT/scripts
+
+
 mv $GITHUB_WORKSPACE/* $APP_ROOT
 mv $GITHUB_WORKSPACE/.[!.]* $APP_ROOT
 

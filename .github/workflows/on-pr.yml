@@ -23,8 +23,7 @@ jobs:
       - name: Setup Env
         run: |
           cd $APP_ROOT
-          mkdir $APP_ROOT/scripts
-          mv $GITHUB_WORKSPACE/scripts/setup-ci-env.sh scripts
+          mv $GITHUB_WORKSPACE/scripts/setup-ci-env.sh scripts/setup-ci-env.sh
           bash scripts/setup-ci-env.sh
 
       - name: Build Docs
