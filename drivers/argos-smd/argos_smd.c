@@ -633,14 +633,13 @@ static int argos_smd_init(const struct device *dev)
 	return 0;
 }
 
-#define ARGOS_SMD_DEFINE(inst)                                                                      \
-	static struct argos_smd_data argos_smd_data_##inst = {                                       \
-	};                                                                                         \
-	static const struct argos_smd_config argos_smd_config_##inst = {                             \
-		.uart_dev = DEVICE_DT_GET(DT_INST_BUS(inst)),                                      \
-	};                                                                                         \
-                                                                                                   \
-	DEVICE_DT_INST_DEFINE(inst, &argos_smd_init, NULL, &argos_smd_data_##inst,                   \
-			      &argos_smd_config_##inst, POST_KERNEL, ARGOS_SMD_INIT_PRIORITY, NULL);
+#define ARGOS_SMD_DEFINE(inst)                                                                   \
+    static struct argos_smd_data argos_smd_data_##inst = {};                                     \
+    static const struct argos_smd_config argos_smd_config_##inst = {                             \
+      .uart_dev = DEVICE_DT_GET(DT_INST_BUS(inst)),                                              \
+    };                                                                                           \
+                                                                                                 \
+    DEVICE_DT_INST_DEFINE(inst, &argos_smd_init, NULL, &argos_smd_data_##inst,                   \
+    	      &argos_smd_config_##inst, POST_KERNEL, ARGOS_SMD_INIT_PRIORITY, NULL);
 
 DT_INST_FOREACH_STATUS_OKAY(ARGOS_SMD_DEFINE)

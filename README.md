@@ -1,83 +1,80 @@
 # Argos SMD Driver for Zephyr
 
-This is a Zephyr driver for the Argos SMD module based on STM32WL from Arribada. [Hardware repository](https://github.com/arribada/argos-smd-hw).
+This is a Zephyr driver for the Argos SMD module based on STM32WL from Arribada. [Hardware repository](https://github.com/arribada/argos-smd-hw). The driver is compatible with both the Arogs SMD Module and the Argos SMD Wing.
+
+
+## Integrating into your Application
+
+To use this Argos SMD Driver in your Zephyr project you need to add this repo to your `west.yaml`
+
+```
+manifest:
+  group-filter: [+optional]
+  remotes:
+    - name: zephyrproject-rtos
+      url-base: https://github.com/zephyrproject-rtos
+    - name: arribada
+      url-base: https://github.com/arribada
+  projects:
+    - name: zephyr
+      remote: zephyrproject-rtos
+      revision: v4.2.0
+      import:
+        name-allowlist:
+          - cmsis_6    # required by the ARM port
+          - hal_nordic # required for Nordic
+          - segger
+    - name: argos-smd-driver-zephyr
+      remote: arribada
+      revision: v1.0.0
+  self:
+    path: my-project
+```
+
+Then in your `prj.conf` enable the driver:
+
+```
+CONFIG_ARGOS_SMD=y
+CONFIG_UART_INTERRUPT_DRIVEN=y
+```
+
+Now add the driver to your DTS, or a create an overlay:
+
+```
+&uart0 {
+    status = "okay";
+    current-speed = <9600>;
+
+    argossmd {
+        compatible = "arribada,argossmd";
+    };
+};
+```
+
+You can now add `#include <argos-smd/argos_smd.h>` to your file and use the API outlined in the [docs]().
+
+// TODO: HOST AND LINK DOCS
+
+See `samples/read_and_write` for an example. 
 
 ## Architecture
 
-The Argos SMD module is a Serial Peripheral and is connected to the Zephyr host via UART. The driver uses the UART Polling API for sending data to the argos smd and the Interrupt API for receiving data.
+The Argos SMD module is a Serial Peripheral and is connected to the Zephyr host via UART. The driver uses the UART Polling API for sending data to the argos smd and the Interrupt API for receiving data. The SMD is connected by UART at a baud of 9600.
 
+
+## Contributing/Developement Setup  
 
 ### Commands
-
-Commands are sent to the ARGOS SMD module following the Kineis AT command:
-    - Commands start by AT+
-    - Answer start by '+' and finish by end of line
-    - Get command is terminated by "=?"   
-    - Set command is terminated by "=VALUE"
-```bash
-# commands available:
-
-# General commands
-AT+VERSION=?          # AT_VERSION
-AT+PING=?             # AT_PING
-AT+FW=?               # AT_FW
-AT+ADDR=?             # AT_ADDR
-AT+ID=?               # AT_ID
-AT+SECKEY=?           # AT_SECKEY
-AT+SN=?               # AT_SN
-AT+RCONF=?            # AT_RCONF
-AT+SAVE_RCONF=?       # AT_SAVE_RCONF
-AT+LPM=?              # AT_LPM
-AT+MC=?               # AT_MC
-AT+TCXO_WU=?          # AT_TCXO_WU
-
-# User data commands
-AT+TX='MSG'           # AT_TX
-
-# Certification commands
-AT+CW=?               # AT_CW 
-
-# Date/time commands
-AT+UDATE=?            # AT_UDATE
-
-# MAC commands
-AT+KMAC=?             # AT_KMAC
-
-# Prepass
-AT+PREPASS_EN=?       # AT_PREPASS_EN
 ```
+# All run in the root directory of the project
 
-# Requirements #
-This repo is for Windows Machines using Windows 11 and above.
-It is assumed that VSCode is already installed and that you have SSH access to Github. 
+# Builds and run local tests
+make 
 
-## WSL & Docker Setup ##
-The development environment is defined in the Dockerfile present in the .devcontainer folder. It builds an image that can be run as a Dev Container on WSL2. WSL2 enables a Linux environment to run on a Windows Machine. 
+# Builds documentation
+make docs 
 
-1. Follow this guide: https://learn.microsoft.com/en-us/windows/wsl/setup/environment to install WSL2. Ensuring that you:
-  1. Install WSL2 with Ubuntu
-  2. Create a Linux User
-  3. Update and upgrade the packages
-3. Install Docker Desktop using the following guide: https://learn.microsoft.com/en-us/windows/wsl/tutorials/wsl-containers#install-docker-desktop
-  1. Please follow up to the end of the Install Docker Desktop section
-  2. It can be useful to enable "Start Docker Desktop when you sign in to you computer" in the Docker Desktop settings. 
-4. Download and install the latest version of [wsl-usb-gui](https://gitlab.com/alelec/wsl-usb-gui/-/releases) This allows USB pass-through from Windows to WSL.
-  1. Once installed, open it and allow it to install its dependencies. 
+# Builds and runs targets tests
+make target_test
 
-## VS Code Dev Containers ##
-1. Install the Dev Containers Extension: https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers 
-
-# Getting Started #
-This repo hasn't been tested on Windows machines, initially please follow the Mac Tested steps below. If these don't work please follow the alternative steps.
-
-## Tested Steps ##
-1. Open WSL
-2. Setup SSH
-3. Run `git clone git@github.com:arribada/linkitv4.git` in WSL 
-4. Open VSCode and click the Blue Box in the bottom left hand corner and click `WSL`
-5. Open the Repo with `File -> Open Folder`
-6. On opening you should be presented with an open within a dev container prompt. If not press F1 to open the command palate and type: `Open Folder in Dev Container` to find the command.
-7. Docker will build the image, this can take some time, follow the Dev Container prompt to show logs.
-8. Go inside example/simple build for your breakout board ex: `west build -b adafruit_feather_nrf52840`
-9. Flash with: `west flash`
-10. Read trace with RTT debugger: `west rtt`
+```

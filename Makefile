@@ -16,7 +16,7 @@ DOC_GENERATOR := doxygen
 TEST_DIR := twister-*
 
 # Default target
-all: docs
+all: test
 
 # Target to generate the documentation
 docs:
@@ -24,9 +24,13 @@ docs:
 	$(DOC_GENERATOR) $(DOC_SRC_DIR)/doxygen.config
 
 test:
-	$(clean)
-	west twister -p adafruit_feather_nrf52840 -T tests/integration -c  --device-testing  --device-serial-pty scripts/uart-pty.py || true
-	cat twister-out/adafruit_feather_nrf52840_nrf52840/zephyr/integration.argos_smd/handler.log
+	west twister -T . -c -p native_sim -p adafruit_feather_nrf52840 
+
+test_target:
+	west twister -T . -c -p adafruit_feather_nrf52840 \
+		--device-testing \
+		--device-serial-pty scripts/uart-pty.py \
+		|| true
 
 # Target to clean the generated documentation
 clean:

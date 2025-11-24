@@ -12,8 +12,9 @@ import serial
 import glob
 
 BAUD = 115200
-TIMEOUT_WAIT = 10.0          # seconds to wait for device
-TIMEOUT_SERIAL = 0.1         # serial read timeout (non-blocking)
+TIMEOUT_WAIT = 10.0        
+TIMEOUT_SERIAL = 0.1
+WAIT_BEFORE_SEARCH = 5
 
 def find_ttyACM(timeout: float) -> str:
     """Return first /dev/ttyACM* that appears within <timeout> seconds."""
@@ -27,7 +28,7 @@ def find_ttyACM(timeout: float) -> str:
 
 def main() -> None:
     try:
-        time.sleep(3)
+        time.sleep(WAIT_BEFORE_SEARCH)
         port = find_ttyACM(TIMEOUT_WAIT)
     except RuntimeError as e:
         print(str(e), file=sys.stderr)

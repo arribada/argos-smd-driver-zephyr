@@ -22,6 +22,7 @@ K_TIMER_DEFINE(uart_emul_reply_timer, uart_emul_reply, NULL);
 
 void *init()
 {
+    zassert_true(device_is_ready(dev_smd));
     zassert_true(device_is_ready(dev));
 
     uart_emul_flush_rx_data(dev);
@@ -37,7 +38,7 @@ ZTEST(comms, test_basic)
 
     k_timer_start(&uart_emul_reply_timer, K_MSEC(10), K_NO_WAIT);
     char msg[9] = "FFFFFFFF";
-    zassert_ok(argos_send_message(dev_smd, msg));
+    zassert_ok(argos_send_payload(dev_smd, msg));
 
     char expected[] = "AT+TX=FFFFFFFF";
     uart_emul_get_tx_data(dev, (uint8_t *)out, sizeof(out));
