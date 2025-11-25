@@ -83,18 +83,11 @@ int send_command(const struct device *dev, uint8_t *command, const uint8_t lengt
 	int32_t timeout_in_ms = CFG_ARGOS_SMD_SERIAL_TIMEOUT;
 	struct argos_smd_data *data = (struct argos_smd_data *)dev->data;
 	const struct argos_smd_config *cfg = dev->config;
-	struct argos_smd_buf *tx = &data->command;
-
-	memset(tx->data, 0, ARGOS_SMD_BUF_SIZE);
-
-	memcpy(tx->data, command, sizeof(uint8_t) * length);
-	tx->len = length;
-	__ASSERT(tx->len <= 255, "Command length too long.");
 
   atomic_set(&data->status, RESPONSE_CLEAR);
 
-	for (size_t i = 0; i < tx->len; i++) {
-		uart_poll_out(cfg->uart_dev, (char)tx->data[i]);
+	for (size_t i = 0; i < length; i++) {
+		uart_poll_out(cfg->uart_dev, (char)command[i]);
 	}
 
 	uart_poll_out(cfg->uart_dev, '\r');

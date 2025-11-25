@@ -58,7 +58,6 @@ struct argos_smd_buf {
 
 struct argos_smd_data {
 	atomic_t status;
-	struct argos_smd_buf command;
 	struct argos_smd_buf response;
 	bool has_response;
 
