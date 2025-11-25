@@ -15,7 +15,6 @@ void array_to_string(uint8_t *buf, char *str, uint8_t len)
 			str[i] = '\0';
 			return;
 		}
-
 	}
 	str[len] = '\0';
 }
@@ -28,25 +27,23 @@ void read_callback(uint8_t *buf, size_t len, void *user_data)
 	TC_PRINT("Response:%s\n", response);
 }
 
-
 ZTEST(argos_smd, test_write)
 {
 	zassert_ok(argos_set_address(dev, "00000000"));
 	zassert_ok(argos_read_address(dev));
-  zassert_equal(strcmp("+ADDR=00000000", response), 0, "%s", response);
-   
+	zassert_equal(strcmp("+ADDR=00000000", response), 0, "%s", response);
+
 	zassert_ok(argos_set_address(dev, "abcdef01"));
 	zassert_ok(argos_read_address(dev));
-  zassert_equal(strcmp("+ADDR=abcdef01", response), 0); 
+	zassert_equal(strcmp("+ADDR=abcdef01", response), 0);
 }
-
 
 ZTEST(argos_smd, test_read)
 {
-    char msg[9] = "FFFFFFFF";
-    zassert_ok(argos_send_payload(dev, msg));
-    char expected[] = "+OK";
-    zassert_equal(strncmp(expected, response, strlen(expected)), 0); 
+	char msg[9] = "FFFFFFFF";
+	zassert_ok(argos_send_payload(dev, msg));
+	char expected[] = "+OK";
+	zassert_equal(strncmp(expected, response, strlen(expected)), 0);
 }
 
 void *setup(void)
@@ -63,8 +60,8 @@ ZTEST_SUITE(argos_smd, NULL, setup, NULL, NULL, NULL);
 // before twister starts looking at it
 int uart_delay()
 {
-    k_busy_wait(5000000); // 5s delay;
-    return 0;
+	k_busy_wait(5000000); // 5s delay;
+	return 0;
 }
 
 SYS_INIT_NAMED(uart_delay, uart_delay, APPLICATION, 95);

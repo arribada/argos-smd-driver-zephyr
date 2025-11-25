@@ -15,9 +15,8 @@ void array_to_string(uint8_t *buf, char *str, uint8_t len)
 	for (int i = 0; i < len; i++) {
 		str[i] = (char)buf[i];
 	}
-	str[len-1] = '\0'; // Remove renew line and null-terminate the string
+	str[len - 1] = '\0'; // Remove renew line and null-terminate the string
 }
-
 
 void read_callback(uint8_t *buf, size_t len, void *user_data)
 {
