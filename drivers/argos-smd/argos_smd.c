@@ -69,6 +69,7 @@ static void uart_rx_handler(const struct device *dev, void *dev_smd)
 				}
 			}
 		}
+
 		if (drv_data->response.len >= sizeof(drv_data->response.data)) {
       atomic_set(&drv_data->status, RESPONSE_FAIL);
 			continue;
@@ -368,224 +369,95 @@ int argos_send_cmd(const struct device *dev, const char *command) {
         LOG_ERR("TXmessage size exceeds the maximum allowed payload size. Message length: %zu, Allowed length: %zu.", message_length, max_length);
         return ERROR_CMD_LENGTH;
     }
-    
-    if (send_command(dev, (uint8_t*)command, message_length, true) != 0) {
-        LOG_ERR("Failed to send the message command.");
-        return -1;
-    }
 
-    return 0;
+    int ret = send_command(dev, (uint8_t*)command, message_length, true);
+    if (ret != 0) {
+        LOG_ERR("Failed to send the message command.");
+    }
+    return ret;
 }
 
-int build_set_cmd(const char *cmd, const char *data,  char *cmd_buffer, size_t buffer_size) {
+int send_set_cmd(const struct device *dev, const char *cmd, const char *data) {
+    char buffer[ARGOS_SMD_BUF_SIZE];
+    const int buffer_size = sizeof(buffer);
+     
 		size_t message_length = strlen(cmd) + strlen(data) + SET_CMD_SIZE_TO_ADD;
 
 
     if (message_length > buffer_size) {
         LOG_ERR("Command size exceeds the provided buffers size. Message length: %zu, Provided length: %zu.", message_length, buffer_size);
-        return ERROR_CMD_LENGTH;
+        return -EINVAL;
     }
 
     
     if (buffer_size > ARGOS_SMD_BUF_SIZE) {
         LOG_ERR("Command size exceeds the maximum allowed payload size. Message length: %zu, Provided length: %zu.",ARGOS_SMD_BUF_SIZE , buffer_size);
-        return ERROR_CMD_LENGTH;
+        return -EINVAL;
     }
-		
-    snprintf(cmd_buffer, buffer_size, "%s=%s", cmd, data);
-    return message_length;
+
+    snprintf(buffer, buffer_size, "%s=%s", cmd, data);
+
+    return send_command(dev, buffer, message_length, true);    
 }
 
 int argos_set_address(const struct device *dev, const char* address) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
     LOG_INF("Setting Argos address to %s", address);
-    int cmd_size = build_set_cmd(AT_ADDR, address, cmd,  sizeof(cmd));
-    if ( cmd_size >= 0) {
-        send_command(dev, cmd, cmd_size, true);
-    } else {
-        LOG_ERR("Failed to build the command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    return send_set_cmd(dev, AT_ADDR, address);
 }
 
 int argos_set_serial_number(const struct device *dev, const char* serial_number) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
     LOG_INF("Setting Argos serial number to %s", serial_number);
-    int cmd_size = build_set_cmd(AT_SN, serial_number, cmd,  sizeof(cmd));
-    if ( cmd_size >= 0) {
-        send_command(dev, cmd, cmd_size, true);
-    } else {
-        LOG_ERR("Failed to build the command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    return send_set_cmd(dev, AT_SN, serial_number);
 }
 
 int argos_set_id(const struct device *dev, const char* id) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
     LOG_INF("Setting Argos ID to %s", id);
-    int cmd_size = build_set_cmd(AT_ID, id, cmd,  sizeof(cmd));
-    if ( cmd_size >= 0) {
-        send_command(dev, cmd, cmd_size, true);
-    } else {
-        LOG_ERR("Failed to build the command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    return send_set_cmd(dev, AT_ID, id);
 }
 
 int argos_set_radioconf(const struct device *dev, const char* rconf) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
     LOG_INF("Setting Argos radio config to %s", rconf);
-    int cmd_size = build_set_cmd(AT_RCONF, rconf, cmd,  sizeof(cmd));
-    if ( cmd_size >= 0) {
-        send_command(dev, cmd, cmd_size, true);
-    } else {
-        LOG_ERR("Failed to build the command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    return send_set_cmd(dev, AT_RCONF, rconf);
 }
 
 int argos_set_saveradioconf(const struct device *dev, const char* saveconf) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
     LOG_INF("Save radio config to %s", saveconf);
-    int cmd_size = build_set_cmd(AT_SAVE_RCONF, saveconf, cmd,  sizeof(cmd));
-    if ( cmd_size >= 0) {
-        send_command(dev, cmd, cmd_size, true);
-    } else {
-        LOG_ERR("Failed to build the command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    return send_set_cmd(dev, AT_SAVE_RCONF, saveconf);
 }
 
 int argos_set_prepass_enable(const struct device *dev, const char* prepass) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
     LOG_INF("Setting Argos prepass enable to %s", prepass);
-    int cmd_size = build_set_cmd(AT_PREPASS_EN, prepass, cmd,  sizeof(cmd));
-    if ( cmd_size >= 0) {
-        send_command(dev, cmd, cmd_size, true);
-    } else {
-        LOG_ERR("Failed to build the command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    return send_set_cmd(dev, AT_PREPASS_EN, prepass);
 }
 
 int argos_set_udate(const struct device *dev, const char* datetime) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
     LOG_INF("Setting Argos Datetime to %s", datetime);
-    int cmd_size = build_set_cmd(AT_UDATE, datetime, cmd,  sizeof(cmd));
-    if ( cmd_size >= 0) {
-        send_command(dev, cmd, cmd_size, true);
-    } else {
-        LOG_ERR("Failed to build the command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    return send_set_cmd(dev, AT_UDATE, datetime);
 }
 
 int argos_set_lpm(const struct device *dev, const char* lpm) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
     LOG_INF("Setting Argos Low power profile to %s", lpm);
-    int cmd_size = build_set_cmd(AT_LPM, lpm, cmd,  sizeof(cmd));
-    if ( cmd_size >= 0) {
-        send_command(dev, cmd, cmd_size, true);
-    } else {
-        LOG_ERR("Failed to build the command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    return send_set_cmd(dev, AT_LPM, lpm);
 }
 
 int argos_set_mc(const struct device *dev, const char* mc) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
     LOG_INF("Setting Argos Mac Counter to %s", mc);
-    int cmd_size = build_set_cmd(AT_MC, mc, cmd,  sizeof(cmd));
-    if ( cmd_size >= 0) {
-        send_command(dev, cmd, cmd_size, true);
-    } else {
-        LOG_ERR("Failed to build the command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    return send_set_cmd(dev, AT_MC, mc);
 }
 
 int argos_set_tcxo_wu(const struct device *dev, const char* tcxo_wu) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
     LOG_INF("Setting Argos TCXO warmup to %s", tcxo_wu);
-    int cmd_size = build_set_cmd(AT_TCXO_WU, tcxo_wu, cmd,  sizeof(cmd));
-    if ( cmd_size >= 0) {
-        send_command(dev, cmd, cmd_size, true);
-    } else {
-        LOG_ERR("Failed to build the command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    return send_set_cmd(dev, AT_TCXO_WU, tcxo_wu);
 }
 
 int argos_set_kmac(const struct device *dev, const char* kmac) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
     LOG_INF("Setting Argos KMAC to %s", kmac);
-    int cmd_size = build_set_cmd(AT_KMAC, kmac, cmd,  sizeof(cmd));
-    if ( cmd_size >= 0) {
-        send_command(dev, cmd, cmd_size, true);
-    } else {
-        LOG_ERR("Failed to build the command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    return send_set_cmd(dev, AT_KMAC, kmac);
 }
 
 int argos_set_cw(const struct device *dev, const char* cw) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
     LOG_INF("Setting Argos set Continuous wave RF test to %s", cw);
-    int cmd_size = build_set_cmd(AT_CW, cw, cmd,  sizeof(cmd));
-    if ( cmd_size >= 0) {
-        send_command(dev, cmd, cmd_size, true);
-    } else {
-        LOG_ERR("Failed to build the command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    return send_set_cmd(dev, AT_CW, cw);
 }
 
 int argos_send_payload(const struct device *dev, const char *paylod) {
@@ -594,22 +466,11 @@ int argos_send_payload(const struct device *dev, const char *paylod) {
 
     if (message_length > max_length) {
         LOG_ERR("TXmessage size exceeds the maximum allowed payload size. Message length: %zu, Allowed length: %zu.", message_length, max_length);
-        return ERROR_CMD_LENGTH;
+        return -EINVAL ;
     }
-
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
 
     LOG_INF("Transmitting Following Message: %s", paylod);
-    int cmd_size = build_set_cmd(AT_TX, paylod, cmd,  sizeof(cmd));
-    if ( cmd_size >= 0) {
-        send_command(dev, cmd, cmd_size, true);
-    } else {
-        LOG_ERR("Failed to build the command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    return send_set_cmd(dev, AT_TX, paylod);
 }
 
 static int argos_smd_init(const struct device *dev)
@@ -627,7 +488,11 @@ static int argos_smd_init(const struct device *dev)
 	drv_data->response.len = 0;
 	atomic_set(&drv_data->status, RESPONSE_CLEAR);
 
-	uart_irq_callback_user_data_set(cfg->uart_dev, uart_rx_handler, (void*) dev);
+	int ret = uart_irq_callback_user_data_set(cfg->uart_dev, uart_rx_handler, (void*) dev);
+  if (ret != 0) {
+      return ret;
+  }
+
 	uart_irq_rx_enable(cfg->uart_dev);
 
 	return 0;
