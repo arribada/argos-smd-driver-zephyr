@@ -6,25 +6,12 @@
 
 const struct device *dev = DEVICE_DT_GET_ONE(arribada_argossmd);
 
-void array_to_string(uint8_t *buf, char *str, uint8_t len)
-{
-	for (int i = 0; i < len; i++) {
-		str[i] = (char)buf[i];
-
-		if (str[i] == '\n' || str[i] == '\r') {
-			str[i] = '\0';
-			return;
-		}
-	}
-	str[len] = '\0';
-}
-
 char response[ARGOS_SMD_BUF_SIZE];
 
-void read_callback(uint8_t *buf, size_t len, void *user_data)
+void read_callback(const char *in, void *user_data)
 {
-	array_to_string(buf, response, len);
-	TC_PRINT("Response:%s\n", response);
+	ARG_UNUSED(user_data);
+	strcpy(response, in);
 }
 
 ZTEST(argos_smd, test_write)

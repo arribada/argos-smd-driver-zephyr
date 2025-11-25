@@ -12,7 +12,13 @@ extern "C" {
 
 #define ARGOS_SMD_BUF_SIZE 255
 
-typedef void (*argos_smd_callback_t)(uint8_t *buf, size_t size, void *user_data);
+/**
+ * @brief Callback invoked by when a response has been received.
+ *
+ * @param buf        Null-terminated character buffer containing the received data.
+ * @param user_data  User-supplied context pointer forwarded from the registration call.
+ */
+typedef void (*argos_smd_callback_t)(const char *buf, void *user_data);
 
 /* Library Functions */
 /**

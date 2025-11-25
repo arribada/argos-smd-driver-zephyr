@@ -52,7 +52,7 @@ extern "C" {
 #define CFG_ARGOS_SMD_SERIAL_TIMEOUT 3000
 
 struct argos_smd_buf {
-	uint8_t data[ARGOS_SMD_BUF_SIZE];
+	char data[ARGOS_SMD_BUF_SIZE];
 	size_t len;
 };
 

@@ -10,18 +10,9 @@ LOG_MODULE_REGISTER(main, CONFIG_APP_LOG_LEVEL);
 BUILD_ASSERT(DT_NODE_HAS_COMPAT(DT_CHOSEN(zephyr_console), zephyr_cdc_acm_uart),
 	     "Console device is not ACM CDC UART device");
 
-void array_to_string(uint8_t *buf, char *str, uint8_t len)
+void read_callback(char *response, void *user_data)
 {
-	for (int i = 0; i < len; i++) {
-		str[i] = (char)buf[i];
-	}
-	str[len - 1] = '\0'; // Remove renew line and null-terminate the string
-}
-
-void read_callback(uint8_t *buf, size_t len, void *user_data)
-{
-	char response[ARGOS_SMD_BUF_SIZE];
-	array_to_string(buf, response, len);
+	ARG_UNUSED(user_data);
 	LOG_INF("Received response: %s", response);
 }
 

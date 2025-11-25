@@ -61,12 +61,12 @@ static void uart_rx_handler(const struct device *dev, void *dev_smd)
 			size_t index = drv_data->response.len - 1;
 			drv_data->response.data[index] = byte;
 
-			if (byte == '\n') {
+			if (byte == '\n' || byte == '\r') {
+				LOG_DBG("Response successfully received");
+				drv_data->response.data[index] = '\0';
 				atomic_set(&drv_data->status, RESPONSE_SUCCESS);
-				LOG_DBG("Response success.");
 				if (callback != NULL) {
-					callback(drv_data->response.data, drv_data->response.len,
-						 drv_data->user_data);
+					callback(drv_data->response.data, drv_data->user_data);
 				}
 			}
 		}
