@@ -106,19 +106,14 @@ int send_command(const struct device *dev, uint8_t *command, const uint8_t lengt
 	return 0;
 }
 
-int build_read_cmd(const char *cmd_define, char *full_command, size_t buffer_size) {
-    size_t required_size = strlen(cmd_define) + READ_CMD_SIZE_TO_ADD; // Length of cmd_define + length of "=?"
+int send_read_cmd(const struct device *dev, const char *cmd) {
+  char buffer[ARGOS_SMD_BUF_SIZE];
+  const int buffer_size = sizeof(buffer);
 
+	size_t message_length = strlen(cmd) + READ_CMD_SIZE_TO_ADD;
+  snprintf(buffer, buffer_size, "%s=?", cmd);
 
-    if (buffer_size < required_size) {
-		LOG_ERR("Error: Buffer size (%zu) is too small. Required size is %zu.", buffer_size, required_size);
-        return ERROR_CMD_LENGTH; // Return an error code
-    }
-
-    strncpy(full_command, cmd_define, buffer_size); // Use strncpy to prevent buffer overflow
-    strncat(full_command, "=?", buffer_size - strlen(full_command)); // Use strncat to prevent buffer overflow
-
-    return 0;
+  return send_command(dev, buffer, message_length, true);
 }
 
 void argos_smd_set_callback(const struct device *dev, argos_smd_callback_t callback,
@@ -130,237 +125,89 @@ void argos_smd_set_callback(const struct device *dev, argos_smd_callback_t callb
 }
 
 int argos_read_version(const struct device *dev) {
-    char cmd[sizeof(AT_VERSION) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
-    // Build the command using the AT_FW define
-    LOG_INF("Request Argos version");
-    if (build_read_cmd(AT_VERSION, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    LOG_INF("Requesting Argos version");
+    return send_read_cmd(dev, AT_VERSION);
 }
 
 int argos_read_ping(const struct device *dev) {
-    char cmd[sizeof(AT_PING) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
-    // Build the command using the AT_FW define
-    LOG_INF("Ping Argos device");
-    if (build_read_cmd(AT_PING, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    LOG_INF("Pinging Argos device");
+    return send_read_cmd(dev, AT_PING);
 }
 
 int argos_read_firmware_version(const struct device *dev) {
-    char cmd[sizeof(AT_FW) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
-    // Build the command using the AT_FW define
-    LOG_INF("Request Argos firmware version");
-    if (build_read_cmd(AT_FW, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    LOG_INF("Requesting Argos firmware version");
+    return send_read_cmd(dev, AT_FW);
 }
 
 int argos_read_address(const struct device *dev) {
-    char cmd[sizeof(AT_ADDR) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
-    LOG_INF("Request Argos address");
-    if (build_read_cmd(AT_ADDR, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the address command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    LOG_INF("Requesting Argos address");
+    return send_read_cmd(dev, AT_ADDR);
 }
 
 int argos_read_id(const struct device *dev) {
-    char cmd[sizeof(AT_ID) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; 
-    int result = 0;
-
-    LOG_INF("Request Argos ID");
-    if (build_read_cmd(AT_ID, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the ID command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    LOG_INF("Requesting Argos ID");
+    return send_read_cmd(dev, AT_ID);
 }
 
 int argos_read_seckey(const struct device *dev) {
-    char cmd[sizeof(AT_SECKEY) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; 
-    int result = 0;
-
-    LOG_INF("Request Argos security key");
-    if (build_read_cmd(AT_SECKEY, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read seckey command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    LOG_INF("Requesting Argos security key");
+    return send_read_cmd(dev, AT_SECKEY);
 }
 
 int argos_read_serial_number(const struct device *dev) {
-    char cmd[sizeof(AT_SN) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
     LOG_INF("Request Argos serial number");
-    if (build_read_cmd(AT_SN, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the serial number command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    return send_read_cmd(dev, AT_SN);
 }
 
 
 int argos_read_radioconf(const struct device *dev) {
-    char cmd[sizeof(AT_RCONF) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
     LOG_INF("Request Argos configuration");
-    if (build_read_cmd(AT_RCONF, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the configuration command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+    return send_read_cmd(dev, AT_RCONF);
 }
 
 int argos_read_prepass_enable(const struct device *dev) {
-    char cmd[sizeof(AT_PREPASS_EN) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
     LOG_INF("Request Argos prepass enable");
-    if (build_read_cmd(AT_PREPASS_EN, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the argos prepass en command.");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
-}
+    return send_read_cmd(dev, AT_PREPASS_EN);
+  }
 
 int argos_read_udate(const struct device *dev) {
-    char cmd[sizeof(AT_UDATE) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
     LOG_INF("Request Argos UTC time configured");
-    if (build_read_cmd(AT_UDATE, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read udate command.");
-        result = ERROR_CMD_BUILD;
-	}
-	return result;
+    return send_read_cmd(dev, AT_UDATE);
 }
 
 int argos_read_lpm(const struct device *dev) {
-    char cmd[sizeof(AT_LPM) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
     LOG_INF("Request Argos low power mode configured");
-    if (build_read_cmd(AT_LPM, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read low power mode command.");
-        result = ERROR_CMD_BUILD;
-	}
-	return result;
+    return send_read_cmd(dev, AT_LPM);
 }
 
 int argos_read_mc(const struct device *dev) {
-    char cmd[sizeof(AT_MC) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
     LOG_INF("Request Argos read Mac counter");
-    if (build_read_cmd(AT_MC, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read mac counter command.");
-        result = ERROR_CMD_BUILD;
-	}
-	return result;
+    return send_read_cmd(dev, AT_MC);
 }
 
 int argos_read_tcxo_wu(const struct device *dev) {
-    char cmd[sizeof(AT_TCXO_WU) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
     LOG_INF("Request Argos read TCXO warmup timer");
-    if (build_read_cmd(AT_TCXO_WU, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read TCXO warmup timer command.");
-        result = ERROR_CMD_BUILD;
-	}
-	return result;
+    return send_read_cmd(dev, AT_TCXO_WU);
 }
 
 int argos_read_kmac(const struct device *dev) {
-    char cmd[sizeof(AT_KMAC) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
     LOG_INF("Request Argos read KMAC profile ");
-    if (build_read_cmd(AT_KMAC, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read KMAC profile command.");
-        result = ERROR_CMD_BUILD;
-	}
-	return result;
+    return send_read_cmd(dev, AT_KMAC);
 }
 
 int argos_read_cw(const struct device *dev) {
-    char cmd[sizeof(AT_CW) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
     LOG_INF("Request Argos read CW configuration ");
-    if (build_read_cmd(AT_CW, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read CW configuration command.");
-        result = ERROR_CMD_BUILD;
-	}
-	return result;
+    return send_read_cmd(dev, AT_CW);
 }
 
 
-
-int argos_send_cmd(const struct device *dev, const char *command) {
+int argos_send_raw(const struct device *dev, const char *command) {
     size_t message_length = strlen(command);
     const size_t max_length = ARGOS_SMD_BUF_SIZE;
     
     if (message_length > max_length) {
         LOG_ERR("TXmessage size exceeds the maximum allowed payload size. Message length: %zu, Allowed length: %zu.", message_length, max_length);
-        return ERROR_CMD_LENGTH;
+        return -EINVAL;
     }
 
     int ret = send_command(dev, (uint8_t*)command, message_length, true);
@@ -370,7 +217,7 @@ int argos_send_cmd(const struct device *dev, const char *command) {
     return ret;
 }
 
-int send_set_cmd(const struct device *dev, const char *cmd, const char *data) {
+static int send_set_cmd(const struct device *dev, const char *cmd, const char *data) {
     char buffer[ARGOS_SMD_BUF_SIZE];
     const int buffer_size = sizeof(buffer);
      

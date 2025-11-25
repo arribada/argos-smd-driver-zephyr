@@ -156,10 +156,10 @@ int argos_send_payload(const struct device *dev, const char *payload);
  * This function transmits the specified command string directly to the device.
  *
  * @param dev Pointer to the device structure.
- * @param command The AT command string to send (e.g., "AT+PING=?").
+ * @param command The AT command string to send (e.g., "AT+PING=?"). Must be null terminated.
  * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
  */
-int argos_send_cmd(const struct device *dev, const char *command);
+int argos_send_raw(const struct device *dev, const char *command);
 
 /**
  * @brief Set the data callback function for the device
