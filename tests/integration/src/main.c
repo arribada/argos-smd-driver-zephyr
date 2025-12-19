@@ -6,31 +6,54 @@
 
 const struct device *dev = DEVICE_DT_GET_ONE(arribada_argossmd);
 
-char response[ARGOS_SMD_BUF_SIZE];
+#define RESPONSE_BUFFER_SIZE 128
+K_MSGQ_DEFINE(response_msgq, RESPONSE_BUFFER_SIZE, 10, 1);
 
-void read_callback(const char *in, void *user_data)
+void read_callback(const char *response, void *user_data)
 {
 	ARG_UNUSED(user_data);
-	strcpy(response, in);
+
+	char out[RESPONSE_BUFFER_SIZE];
+	strcpy(out, response);
+	k_msgq_put(&response_msgq, out, K_NO_WAIT);
 }
 
 ZTEST(argos_smd, test_write)
 {
+	char response[RESPONSE_BUFFER_SIZE];
+
 	zassert_ok(argos_set_address(dev, "00000000"));
+	k_msgq_get(&response_msgq, response, K_FOREVER);
+	zassert_equal(strcmp("+OK", response), 0, "%s", response);
+
 	zassert_ok(argos_read_address(dev));
+	k_msgq_get(&response_msgq, response, K_FOREVER);
 	zassert_equal(strcmp("+ADDR=00000000", response), 0, "%s", response);
+	k_msgq_get(&response_msgq, response, K_FOREVER);
+	zassert_equal(strcmp("+OK", response), 0, "%s", response);
 
 	zassert_ok(argos_set_address(dev, "abcdef01"));
+	k_msgq_get(&response_msgq, response, K_FOREVER);
+	zassert_equal(strcmp("+OK", response), 0, "%s", response);
+
 	zassert_ok(argos_read_address(dev));
+	k_msgq_get(&response_msgq, response, K_FOREVER);
 	zassert_equal(strcmp("+ADDR=abcdef01", response), 0);
+	k_msgq_get(&response_msgq, response, K_FOREVER);
+	zassert_equal(strcmp("+OK", response), 0, "%s", response);
 }
 
 ZTEST(argos_smd, test_read)
 {
+	char response[RESPONSE_BUFFER_SIZE];
+
 	char msg[9] = "FFFFFFFF";
 	zassert_ok(argos_send_payload(dev, msg));
-	char expected[] = "+OK";
-	zassert_equal(strncmp(expected, response, strlen(expected)), 0);
+
+	k_msgq_get(&response_msgq, response, K_FOREVER);
+	zassert_equal(strcmp("+OK", response), 0, "%s", response);
+	k_msgq_get(&response_msgq, response, K_FOREVER);
+	zassert_equal(strcmp("+TX=0,FFFFFFFF", response), 0, "%s", response);
 }
 
 void *setup(void)
@@ -47,7 +70,7 @@ ZTEST_SUITE(argos_smd, NULL, setup, NULL, NULL, NULL);
 // before twister starts looking at it
 int uart_delay()
 {
-	k_busy_wait(5000000); // 5s delay;
+	k_busy_wait(3000000); // 5s delay;
 	return 0;
 }
 

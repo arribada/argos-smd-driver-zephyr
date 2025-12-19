@@ -44,12 +44,8 @@ extern "C" {
 #define RESPONSE_PENDING 0
 #define ERROR_CMD_LENGTH 1
 #define ERROR_CMD_BUILD  2
-#define RESPONSE_SUCCESS 3
-#define RESPONSE_FAIL    4
-#define RESPONSE_CLEAR   5
-
-/* wait serial output with 1000ms timeout */
-#define CFG_ARGOS_SMD_SERIAL_TIMEOUT 3000
+#define RESPONSE_FAIL    3
+#define RESPONSE_CLEAR   4
 
 struct argos_smd_buf {
 	char data[ARGOS_SMD_BUF_SIZE];

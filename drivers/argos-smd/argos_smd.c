@@ -64,7 +64,7 @@ static void uart_rx_handler(const struct device *dev, void *dev_smd)
 			if (byte == '\n' || byte == '\r') {
 				LOG_DBG("Response successfully received");
 				drv_data->response.data[index] = '\0';
-				atomic_set(&drv_data->status, RESPONSE_SUCCESS);
+				atomic_set(&drv_data->status, RESPONSE_CLEAR);
 				if (callback != NULL) {
 					callback(drv_data->response.data, drv_data->user_data);
 				}
@@ -78,10 +78,8 @@ static void uart_rx_handler(const struct device *dev, void *dev_smd)
 	}
 }
 
-int send_command(const struct device *dev, uint8_t *command, const uint8_t length,
-		 const bool timeout)
+int send_command(const struct device *dev, uint8_t *command, const uint8_t length)
 {
-	int32_t timeout_in_ms = CFG_ARGOS_SMD_SERIAL_TIMEOUT;
 	struct argos_smd_data *data = (struct argos_smd_data *)dev->data;
 	const struct argos_smd_config *cfg = dev->config;
 
@@ -93,17 +91,6 @@ int send_command(const struct device *dev, uint8_t *command, const uint8_t lengt
 
 	uart_poll_out(cfg->uart_dev, '\r');
 
-	if (timeout) {
-		while (atomic_get(&data->status) != RESPONSE_SUCCESS) {
-			if (timeout_in_ms < 0) {
-				LOG_WRN("Command timeout.");
-				atomic_set(&data->status, RESPONSE_CLEAR);
-				return -ETIMEDOUT;
-			}
-			timeout_in_ms -= 10;
-			k_msleep(10);
-		}
-	}
 	return 0;
 }
 
@@ -115,7 +102,7 @@ int send_read_cmd(const struct device *dev, const char *cmd)
 	size_t message_length = strlen(cmd) + READ_CMD_SIZE_TO_ADD;
 	snprintf(buffer, buffer_size, "%s=?", cmd);
 
-	return send_command(dev, buffer, message_length, true);
+	return send_command(dev, buffer, message_length);
 }
 
 void argos_smd_set_callback(const struct device *dev, argos_smd_callback_t callback,
@@ -228,7 +215,7 @@ int argos_send_raw(const struct device *dev, const char *command)
 		return -EINVAL;
 	}
 
-	int ret = send_command(dev, (uint8_t *)command, message_length, true);
+	int ret = send_command(dev, (uint8_t *)command, message_length);
 	if (ret != 0) {
 		LOG_ERR("Failed to send the message command.");
 	}
@@ -258,7 +245,7 @@ static int send_set_cmd(const struct device *dev, const char *cmd, const char *d
 
 	snprintf(buffer, buffer_size, "%s=%s", cmd, data);
 
-	return send_command(dev, buffer, message_length, true);
+	return send_command(dev, buffer, message_length);
 }
 
 int argos_set_address(const struct device *dev, const char *address)
