@@ -1,83 +1,121 @@
 # Argos SMD Driver for Zephyr
 
-This is a Zephyr driver for the Argos SMD module based on STM32WL from Arribada. [Hardware repository](https://github.com/arribada/argos-smd-hw).
+This is a Zephyr driver for the Argos SMD module based on STM32WL from Arribada. [Hardware repository](https://github.com/arribada/argos-smd-hw). The driver is compatible with both the Arogs SMD Module and the Argos SMD Wing.
+
+## Note Before Usage
+
+Before you can transmit any data from your Argos SMD Module/Wing you must setup a [Argos CLS Account](https://www.argos-system.org/get-started/) to get your ID, Address and Key.
+
+## Integrating into your Application
+
+To use this Argos SMD Driver in your Zephyr project you need to add this repo to your `west.yaml`
+
+```
+manifest:
+  group-filter: [+optional]
+  remotes:
+    - name: zephyrproject-rtos
+      url-base: https://github.com/zephyrproject-rtos
+    - name: arribada
+      url-base: https://github.com/arribada
+  projects:
+    - name: zephyr
+      remote: zephyrproject-rtos
+      revision: v4.2.0
+      import:
+        name-allowlist:
+          - cmsis_6    # required by the ARM port
+          - hal_nordic # required for Nordic
+          - segger     # Required for RTT
+    - name: argos-smd-driver-zephyr
+      remote: arribada
+      revision: v1.0.0
+  self:
+    path: my-project
+```
+
+Then in your `prj.conf` enable the driver:
+
+```
+CONFIG_ARGOS_SMD=y
+CONFIG_UART_INTERRUPT_DRIVEN=y
+```
+
+Now add the driver to your DTS, or a create an overlay:
+
+```
+&uart0 {
+    status = "okay";
+    current-speed = <9600>;
+
+    argossmd {
+        compatible = "arribada,argossmd";
+        /* Optional: GPIO to wake up module from low power mode */
+        /* wakeup-gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>; */
+    };
+};
+```
+
+### Optional Wakeup GPIO
+
+If your Argos SMD module is configured to use low power mode (`AT+LPM`), you can optionally configure a GPIO pin to wake it up before communication.
+
+To enable the wakeup GPIO, add the `wakeup-gpios` property to your devicetree:
+
+```
+argossmd {
+    compatible = "arribada,argossmd";
+    wakeup-gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>;
+};
+```
+
+Then in your code, you need to manually control the wakeup pin:
+
+```c
+const struct device *dev_smd = DEVICE_DT_GET_ONE(arribada_argossmd);
+
+/* Enable wakeup pin before communicating with the module */
+int ret = argos_smd_wakeup_enable(dev_smd);
+if (ret == 0) {
+    /* Pin successfully enabled, module is now awake */
+}
+
+/* Perform your AT commands here */
+argos_read_ping(dev_smd);
+argos_set_address(dev_smd, "ABCDEF01");
+/* ... */
+
+/* Disable wakeup pin when done to allow low power mode */
+argos_smd_wakeup_disable(dev_smd);
+```
+
+This approach gives you full control over when the module is awake, allowing you to:
+- Keep the module awake for multiple commands (more efficient)
+- Decide when to let it enter low power mode
+- Optimize power consumption based on your application needs
+
+If no wakeup GPIO is configured, the functions will return `-ENOTSUP` and you can continue normal operation.
+
+You can now add `#include <argos-smd/argos_smd.h>` to you code and use the API outlined in the [docs](https://arribada.github.io/argos-smd-driver-zephyr). Also see `samples/read_and_write` for an basic example.
 
 ## Architecture
 
-The Argos SMD module is a Serial Peripheral and is connected to the Zephyr host via UART. The driver uses the UART Polling API for sending data to the argos smd and the Interrupt API for receiving data.
+The Argos SMD module is a Serial Peripheral and is connected to the Zephyr host via UART at a baudrate of 9600. The driver uses the UART Polling API for sending data to the argos smd and the Interrupt API for receiving data.
 
+## Contributing/Developement  
 
-### Commands
-
-Commands are sent to the ARGOS SMD module following the Kineis AT command:
-    - Commands start by AT+
-    - Answer start by '+' and finish by end of line
-    - Get command is terminated by "=?"   
-    - Set command is terminated by "=VALUE"
-```bash
-# commands available:
-
-# General commands
-AT+VERSION=?          # AT_VERSION
-AT+PING=?             # AT_PING
-AT+FW=?               # AT_FW
-AT+ADDR=?             # AT_ADDR
-AT+ID=?               # AT_ID
-AT+SECKEY=?           # AT_SECKEY
-AT+SN=?               # AT_SN
-AT+RCONF=?            # AT_RCONF
-AT+SAVE_RCONF=?       # AT_SAVE_RCONF
-AT+LPM=?              # AT_LPM
-AT+MC=?               # AT_MC
-AT+TCXO_WU=?          # AT_TCXO_WU
-
-# User data commands
-AT+TX='MSG'           # AT_TX
-
-# Certification commands
-AT+CW=?               # AT_CW 
-
-# Date/time commands
-AT+UDATE=?            # AT_UDATE
-
-# MAC commands
-AT+KMAC=?             # AT_KMAC
-
-# Prepass
-AT+PREPASS_EN=?       # AT_PREPASS_EN
 ```
+# All run in the root directory of the project
 
-# Requirements #
-This repo is for Windows Machines using Windows 11 and above.
-It is assumed that VSCode is already installed and that you have SSH access to Github. 
+# Builds all test and run local tests
+make 
 
-## WSL & Docker Setup ##
-The development environment is defined in the Dockerfile present in the .devcontainer folder. It builds an image that can be run as a Dev Container on WSL2. WSL2 enables a Linux environment to run on a Windows Machine. 
+# Builds documentation
+make docs 
 
-1. Follow this guide: https://learn.microsoft.com/en-us/windows/wsl/setup/environment to install WSL2. Ensuring that you:
-  1. Install WSL2 with Ubuntu
-  2. Create a Linux User
-  3. Update and upgrade the packages
-3. Install Docker Desktop using the following guide: https://learn.microsoft.com/en-us/windows/wsl/tutorials/wsl-containers#install-docker-desktop
-  1. Please follow up to the end of the Install Docker Desktop section
-  2. It can be useful to enable "Start Docker Desktop when you sign in to you computer" in the Docker Desktop settings. 
-4. Download and install the latest version of [wsl-usb-gui](https://gitlab.com/alelec/wsl-usb-gui/-/releases) This allows USB pass-through from Windows to WSL.
-  1. Once installed, open it and allow it to install its dependencies. 
+# Same as `make`
+make test
 
-## VS Code Dev Containers ##
-1. Install the Dev Containers Extension: https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers 
-
-# Getting Started #
-This repo hasn't been tested on Windows machines, initially please follow the Mac Tested steps below. If these don't work please follow the alternative steps.
-
-## Tested Steps ##
-1. Open WSL
-2. Setup SSH
-3. Run `git clone git@github.com:arribada/linkitv4.git` in WSL 
-4. Open VSCode and click the Blue Box in the bottom left hand corner and click `WSL`
-5. Open the Repo with `File -> Open Folder`
-6. On opening you should be presented with an open within a dev container prompt. If not press F1 to open the command palate and type: `Open Folder in Dev Container` to find the command.
-7. Docker will build the image, this can take some time, follow the Dev Container prompt to show logs.
-8. Go inside example/simple build for your breakout board ex: `west build -b adafruit_feather_nrf52840`
-9. Flash with: `west flash`
-10. Read trace with RTT debugger: `west rtt`
+# Builds and runs target based tests
+make target_test
+```

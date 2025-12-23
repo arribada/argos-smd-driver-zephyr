@@ -1,0 +1,60 @@
+name: Docs and Tests
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:   
+  Build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        working-directory: /home/user/west-workspace/${{ github.event.repository.name }}
+
+    steps:   
+      - name: Check out repository code
+        uses: actions/checkout@v4
+        with:
+            fetch-depth: 0
+
+      - name: Setup Env
+        run: |
+          mv $GITHUB_WORKSPACE/* $APP_ROOT
+          mv $GITHUB_WORKSPACE/.[!.]* $APP_ROOT
+
+          chmod 777 -R $APP_ROOT
+
+          git config --global --add safe.directory "*"
+          git config --global core.sshCommand "ssh -o StrictHostKeyChecking=accept-new"
+
+          echo "ZEPHYR_SDK_INSTALL_DIR=/opt/toolchains/zephyr-sdk-$ZSDK_VERSION" >> $GITHUB_ENV
+          west update
+
+          echo "APP_ROOT=$APP_ROOT" >> $GITHUB_ENV
+          
+
+      - name: Build Docs
+        run: make docs
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs
+          path: ${{ env.APP_ROOT }}/docs/build/html/
+
+      - name: Run Tests
+        run: make test
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: twister_out
+          path: ${{ env.APP_ROOT }}/twister-out/

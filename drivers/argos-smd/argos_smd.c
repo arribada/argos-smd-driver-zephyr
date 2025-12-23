@@ -4,7 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#define DT_DRV_COMPAT          arribada_argossmd
+#define DT_DRV_COMPAT arribada_argossmd
+#define MODULE        argos_smd
 
 #include <stdio.h>
 
@@ -14,6 +15,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <zephyr/drivers/uart.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
 
 #include <argos-smd/argos_smd.h>
@@ -21,7 +23,7 @@
 
 #define ARGOS_SMD_INIT_PRIORITY 60
 
-LOG_MODULE_REGISTER(ARGOS_SMD, CONFIG_ARGOS_SMD_LOG_LEVEL);
+LOG_MODULE_REGISTER(MODULE, CONFIG_ARGOS_SMD_LOG_LEVEL);
 
 static void argos_smd_uart_flush(const struct device *dev)
 {
@@ -35,8 +37,46 @@ static void argos_smd_uart_flush(const struct device *dev)
 	LOG_DBG("UART RX buffer flushed.");
 }
 
+int argos_smd_wakeup_enable(const struct device *dev)
+{
+	const struct argos_smd_config *cfg = dev->config;
+
+	if (cfg->wakeup_gpio.port == NULL) {
+		LOG_WRN("No wakeup GPIO configured");
+		return -ENOTSUP;
+	}
+
+	int ret = gpio_pin_set_dt(&cfg->wakeup_gpio, 1);
+	if (ret != 0) {
+		LOG_ERR("Failed to enable wakeup pin (error: %d)", ret);
+		return ret;
+	}
+
+	LOG_DBG("Wakeup pin enabled (set HIGH)");
+	return 0;
+}
+
+int argos_smd_wakeup_disable(const struct device *dev)
+{
+	const struct argos_smd_config *cfg = dev->config;
+
+	if (cfg->wakeup_gpio.port == NULL) {
+		LOG_WRN("No wakeup GPIO configured");
+		return -ENOTSUP;
+	}
+
+	int ret = gpio_pin_set_dt(&cfg->wakeup_gpio, 0);
+	if (ret != 0) {
+		LOG_ERR("Failed to disable wakeup pin (error: %d)", ret);
+		return ret;
+	}
+
+	LOG_DBG("Wakeup pin disabled (set LOW)");
+	return 0;
+}
+
 static void uart_rx_handler(const struct device *dev, void *dev_smd)
-{	
+{
 	const struct device *argos_smd_dev = dev_smd;
 	struct argos_smd_data *drv_data = argos_smd_dev->data;
 
@@ -49,557 +89,290 @@ static void uart_rx_handler(const struct device *dev, void *dev_smd)
 			continue;
 		}
 
-		if (byte == '+' && drv_data->status == RESPONSE_CLEAR) {
-			drv_data->status = RESPONSE_PENDING;
+		if (byte == '+' && atomic_get(&drv_data->status) == RESPONSE_CLEAR) {
+			atomic_set(&drv_data->status, RESPONSE_PENDING);
 			memset(drv_data->response.data, 0, sizeof(drv_data->response.data));
 			drv_data->response.len = 0;
 		}
 
-		if (drv_data->status == RESPONSE_PENDING) {
+		if (atomic_get(&drv_data->status) == RESPONSE_PENDING) {
 			drv_data->response.len++;
 			size_t index = drv_data->response.len - 1;
 			drv_data->response.data[index] = byte;
 
-			if (byte == '\n') {
-				drv_data->status = RESPONSE_SUCCESS;
-				LOG_DBG("Response success.");
+			if (byte == '\n' || byte == '\r') {
+				LOG_DBG("Response successfully received");
+				drv_data->response.data[index] = '\0';
+				atomic_set(&drv_data->status, RESPONSE_CLEAR);
 				if (callback != NULL) {
-					callback(drv_data->response.data, drv_data->response.len, drv_data->user_data);
+					callback(drv_data->response.data, drv_data->user_data);
 				}
 			}
 		}
+
 		if (drv_data->response.len >= sizeof(drv_data->response.data)) {
-			drv_data->status = RESPONSE_FAIL;
+			atomic_set(&drv_data->status, RESPONSE_FAIL);
 			continue;
 		}
 	}
 }
 
-int send_command(const struct device *dev, uint8_t *command, const uint8_t length,
-		      const bool timeout)
+int send_command(const struct device *dev, uint8_t *command, const uint8_t length)
 {
-	int32_t timeout_in_ms = CFG_ARGOS_SMD_SERIAL_TIMEOUT;
 	struct argos_smd_data *data = (struct argos_smd_data *)dev->data;
 	const struct argos_smd_config *cfg = dev->config;
-	struct argos_smd_buf *tx = &data->command;
 
-	memset(tx->data, 0, ARGOS_SMD_BUF_SIZE);
+	atomic_set(&data->status, RESPONSE_CLEAR);
 
-	memcpy(tx->data, command, sizeof(uint8_t) * length);
-	tx->len = length;
-	__ASSERT(tx->len <= 255, "Command length too long.");
-
-	if (CONFIG_ARGOS_SMD_LOG_LEVEL >= LOG_LEVEL_DBG) {
-		LOG_DBG("Command: %s", tx->data);
-	}
-
-	for (size_t i = 0; i < tx->len; i++) {
-		data->status = RESPONSE_CLEAR;
-		uart_poll_out(cfg->uart_dev, (char)tx->data[i]);
+	for (size_t i = 0; i < length; i++) {
+		uart_poll_out(cfg->uart_dev, (char)command[i]);
 	}
 
 	uart_poll_out(cfg->uart_dev, '\r');
-	uart_poll_out(cfg->uart_dev, '\n');
 
-	if (timeout) {
-		while (data->status != RESPONSE_SUCCESS) {
-			if (timeout_in_ms < 0) {
-				LOG_WRN("Command timeout.");
-                data->status = RESPONSE_CLEAR;
-				return -ETIMEDOUT;
-			}
-			timeout_in_ms -= 10;
-			k_msleep(10);
-		}
-	}
 	return 0;
 }
 
-int build_read_cmd(const char *cmd_define, char *full_command, size_t buffer_size) {
-    size_t required_size = strlen(cmd_define) + READ_CMD_SIZE_TO_ADD; // Length of cmd_define + length of "=?"
+int send_read_cmd(const struct device *dev, const char *cmd)
+{
+	char buffer[ARGOS_SMD_BUF_SIZE];
+	const int buffer_size = sizeof(buffer);
 
+	size_t message_length = strlen(cmd) + READ_CMD_SIZE_TO_ADD;
+	snprintf(buffer, buffer_size, "%s=?", cmd);
 
-    if (buffer_size < required_size) {
-		LOG_ERR("Error: Buffer size (%zu) is too small. Required size is %zu.", buffer_size, required_size);
-        return ERROR_CMD_LENGTH; // Return an error code
-    }
-
-    strncpy(full_command, cmd_define, buffer_size); // Use strncpy to prevent buffer overflow
-    strncat(full_command, "=?", buffer_size - strlen(full_command)); // Use strncat to prevent buffer overflow
-
-    return 0;
+	return send_command(dev, buffer, message_length);
 }
 
 void argos_smd_set_callback(const struct device *dev, argos_smd_callback_t callback,
-				      void *user_data)
+			    void *user_data)
 {
 	struct argos_smd_data *data = (struct argos_smd_data *)dev->data;
 	data->callback = callback;
 	data->user_data = user_data;
 }
 
-int argos_read_version(const struct device *dev) {
-    char cmd[sizeof(AT_VERSION) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
-    // Build the command using the AT_FW define
-    LOG_INF("Request Argos version\n");
-    if (build_read_cmd(AT_VERSION, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+int argos_read_version(const struct device *dev)
+{
+	LOG_INF("Requesting Argos version");
+	return send_read_cmd(dev, AT_VERSION);
 }
 
-int argos_read_ping(const struct device *dev) {
-    char cmd[sizeof(AT_PING) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
-    // Build the command using the AT_FW define
-    LOG_INF("Ping Argos device\n");
-    if (build_read_cmd(AT_PING, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+int argos_read_ping(const struct device *dev)
+{
+	LOG_INF("Pinging Argos device");
+	return send_read_cmd(dev, AT_PING);
 }
 
-int argos_read_firmware_version(const struct device *dev) {
-    char cmd[sizeof(AT_FW) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
-    // Build the command using the AT_FW define
-    LOG_INF("Request Argos firmware version\n");
-    if (build_read_cmd(AT_FW, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+int argos_read_firmware_version(const struct device *dev)
+{
+	LOG_INF("Requesting Argos firmware version");
+	return send_read_cmd(dev, AT_FW);
 }
 
-int argos_read_address(const struct device *dev) {
-    char cmd[sizeof(AT_ADDR) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
-    LOG_INF("Request Argos address\n");
-    if (build_read_cmd(AT_ADDR, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the address command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+int argos_read_address(const struct device *dev)
+{
+	LOG_INF("Requesting Argos address");
+	return send_read_cmd(dev, AT_ADDR);
 }
 
-int argos_read_id(const struct device *dev) {
-    char cmd[sizeof(AT_ID) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; 
-    int result = 0;
-
-    LOG_INF("Request Argos ID\n");
-    if (build_read_cmd(AT_ID, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the ID command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+int argos_read_id(const struct device *dev)
+{
+	LOG_INF("Requesting Argos ID");
+	return send_read_cmd(dev, AT_ID);
 }
 
-int argos_read_seckey(const struct device *dev) {
-    char cmd[sizeof(AT_SECKEY) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; 
-    int result = 0;
-
-    LOG_INF("Request Argos security key\n");
-    if (build_read_cmd(AT_SECKEY, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read seckey command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+int argos_read_seckey(const struct device *dev)
+{
+	LOG_INF("Requesting Argos security key");
+	return send_read_cmd(dev, AT_SECKEY);
 }
 
-int argos_read_serial_number(const struct device *dev) {
-    char cmd[sizeof(AT_SN) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
-    LOG_INF("Request Argos serial number\n");
-    if (build_read_cmd(AT_SN, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the serial number command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+int argos_read_serial_number(const struct device *dev)
+{
+	LOG_INF("Request Argos serial number");
+	return send_read_cmd(dev, AT_SN);
 }
 
-
-int argos_read_radioconf(const struct device *dev) {
-    char cmd[sizeof(AT_RCONF) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
-    LOG_INF("Request Argos configuration\n");
-    if (build_read_cmd(AT_RCONF, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the configuration command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+int argos_read_radioconf(const struct device *dev)
+{
+	LOG_INF("Request Argos configuration");
+	return send_read_cmd(dev, AT_RCONF);
 }
 
-int argos_read_prepass_enable(const struct device *dev) {
-    char cmd[sizeof(AT_PREPASS_EN) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
-    LOG_INF("Request Argos prepass enable\n");
-    if (build_read_cmd(AT_PREPASS_EN, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the argos prepass en command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+int argos_read_prepass_enable(const struct device *dev)
+{
+	LOG_INF("Request Argos prepass enable");
+	return send_read_cmd(dev, AT_PREPASS_EN);
 }
 
-int argos_read_udate(const struct device *dev) {
-    char cmd[sizeof(AT_UDATE) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
+int argos_read_udate(const struct device *dev)
+{
+	LOG_INF("Request Argos UTC time configured");
+	return send_read_cmd(dev, AT_UDATE);
+}
 
-    LOG_INF("Request Argos UTC time configured\n");
-    if (build_read_cmd(AT_UDATE, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read udate command.\n");
-        result = ERROR_CMD_BUILD;
+int argos_read_lpm(const struct device *dev)
+{
+	LOG_INF("Request Argos low power mode configured");
+	return send_read_cmd(dev, AT_LPM);
+}
+
+int argos_read_mc(const struct device *dev)
+{
+	LOG_INF("Request Argos read Mac counter");
+	return send_read_cmd(dev, AT_MC);
+}
+
+int argos_read_tcxo_wu(const struct device *dev)
+{
+	LOG_INF("Request Argos read TCXO warmup timer");
+	return send_read_cmd(dev, AT_TCXO_WU);
+}
+
+int argos_read_kmac(const struct device *dev)
+{
+	LOG_INF("Request Argos read KMAC profile ");
+	return send_read_cmd(dev, AT_KMAC);
+}
+
+int argos_read_cw(const struct device *dev)
+{
+	LOG_INF("Request Argos read CW configuration ");
+	return send_read_cmd(dev, AT_CW);
+}
+
+int argos_send_raw(const struct device *dev, const char *command)
+{
+	size_t message_length = strlen(command);
+	const size_t max_length = ARGOS_SMD_BUF_SIZE;
+
+	if (message_length > max_length) {
+		LOG_ERR("TXmessage size exceeds the maximum allowed payload size. Message length: "
+			"%zu, Allowed length: %zu.",
+			message_length, max_length);
+		return -EINVAL;
 	}
-	return result;
-}
 
-int argos_read_lpm(const struct device *dev) {
-    char cmd[sizeof(AT_LPM) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
-    LOG_INF("Request Argos low power mode configured\n");
-    if (build_read_cmd(AT_LPM, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read low power mode command.\n");
-        result = ERROR_CMD_BUILD;
+	int ret = send_command(dev, (uint8_t *)command, message_length);
+	if (ret != 0) {
+		LOG_ERR("Failed to send the message command.");
 	}
-	return result;
+	return ret;
 }
 
-int argos_read_mc(const struct device *dev) {
-    char cmd[sizeof(AT_MC) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
+static int send_set_cmd(const struct device *dev, const char *cmd, const char *data)
+{
+	char buffer[ARGOS_SMD_BUF_SIZE];
+	const int buffer_size = sizeof(buffer);
 
-    LOG_INF("Request Argos read Mac counter\n");
-    if (build_read_cmd(AT_MC, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read mac counter command.\n");
-        result = ERROR_CMD_BUILD;
+	size_t message_length = strlen(cmd) + strlen(data) + SET_CMD_SIZE_TO_ADD;
+
+	if (message_length > buffer_size) {
+		LOG_ERR("Command size exceeds the provided buffers size. Message length: %zu, "
+			"Provided length: %zu.",
+			message_length, buffer_size);
+		return -EINVAL;
 	}
-	return result;
-}
 
-int argos_read_tcxo_wu(const struct device *dev) {
-    char cmd[sizeof(AT_TCXO_WU) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
-    LOG_INF("Request Argos read TCXO warmup timer\n");
-    if (build_read_cmd(AT_TCXO_WU, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read TCXO warmup timer command.\n");
-        result = ERROR_CMD_BUILD;
+	if (buffer_size > ARGOS_SMD_BUF_SIZE) {
+		LOG_ERR("Command size exceeds the maximum allowed payload size. Message length: "
+			"%zu, Provided length: %zu.",
+			ARGOS_SMD_BUF_SIZE, buffer_size);
+		return -EINVAL;
 	}
-	return result;
+
+	snprintf(buffer, buffer_size, "%s=%s", cmd, data);
+
+	return send_command(dev, buffer, message_length);
 }
 
-int argos_read_kmac(const struct device *dev) {
-    char cmd[sizeof(AT_KMAC) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
+int argos_set_address(const struct device *dev, const char *address)
+{
+	LOG_INF("Setting Argos address to %s", address);
+	return send_set_cmd(dev, AT_ADDR, address);
+}
 
-    LOG_INF("Request Argos read KMAC profile \n");
-    if (build_read_cmd(AT_KMAC, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read KMAC profile command.\n");
-        result = ERROR_CMD_BUILD;
+int argos_set_serial_number(const struct device *dev, const char *serial_number)
+{
+	LOG_INF("Setting Argos serial number to %s", serial_number);
+	return send_set_cmd(dev, AT_SN, serial_number);
+}
+
+int argos_set_id(const struct device *dev, const char *id)
+{
+	LOG_INF("Setting Argos ID to %s", id);
+	return send_set_cmd(dev, AT_ID, id);
+}
+
+int argos_set_radioconf(const struct device *dev, const char *rconf)
+{
+	LOG_INF("Setting Argos radio config to %s", rconf);
+	return send_set_cmd(dev, AT_RCONF, rconf);
+}
+
+int argos_set_saveradioconf(const struct device *dev, const char *saveconf)
+{
+	LOG_INF("Save radio config to %s", saveconf);
+	return send_set_cmd(dev, AT_SAVE_RCONF, saveconf);
+}
+
+int argos_set_prepass_enable(const struct device *dev, const char *prepass)
+{
+	LOG_INF("Setting Argos prepass enable to %s", prepass);
+	return send_set_cmd(dev, AT_PREPASS_EN, prepass);
+}
+
+int argos_set_udate(const struct device *dev, const char *datetime)
+{
+	LOG_INF("Setting Argos Datetime to %s", datetime);
+	return send_set_cmd(dev, AT_UDATE, datetime);
+}
+
+int argos_set_lpm(const struct device *dev, const char *lpm)
+{
+	LOG_INF("Setting Argos Low power profile to %s", lpm);
+	return send_set_cmd(dev, AT_LPM, lpm);
+}
+
+int argos_set_mc(const struct device *dev, const char *mc)
+{
+	LOG_INF("Setting Argos Mac Counter to %s", mc);
+	return send_set_cmd(dev, AT_MC, mc);
+}
+
+int argos_set_tcxo_wu(const struct device *dev, const char *tcxo_wu)
+{
+	LOG_INF("Setting Argos TCXO warmup to %s", tcxo_wu);
+	return send_set_cmd(dev, AT_TCXO_WU, tcxo_wu);
+}
+
+int argos_set_kmac(const struct device *dev, const char *kmac)
+{
+	LOG_INF("Setting Argos KMAC to %s", kmac);
+	return send_set_cmd(dev, AT_KMAC, kmac);
+}
+
+int argos_set_cw(const struct device *dev, const char *cw)
+{
+	LOG_INF("Setting Argos set Continuous wave RF test to %s", cw);
+	return send_set_cmd(dev, AT_CW, cw);
+}
+
+int argos_send_payload(const struct device *dev, const char *paylod)
+{
+	size_t message_length = strlen(paylod);
+	const size_t max_length = TX_MAX_LDA2_PAYLOAD_SIZE;
+
+	if (message_length > max_length) {
+		LOG_ERR("TXmessage size exceeds the maximum allowed payload size. Message length: "
+			"%zu, Allowed length: %zu.",
+			message_length, max_length);
+		return -EINVAL;
 	}
-	return result;
-}
 
-int argos_read_cw(const struct device *dev) {
-    char cmd[sizeof(AT_CW) - 1 + READ_CMD_SIZE_TO_ADD] = {0}; // +2 for "=?" and null terminator
-    int result = 0;
-
-    LOG_INF("Request Argos read CW configuration \n");
-    if (build_read_cmd(AT_CW, cmd, sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the read CW configuration command.\n");
-        result = ERROR_CMD_BUILD;
-	}
-	return result;
-}
-
-int argos_send_message(const struct device *dev, const char *TXmessage) {
-    size_t message_length = strlen(TXmessage);
-    const size_t max_length = TX_MAX_LDA2_PAYLOAD_SIZE / 8;
-    
-    if (message_length > max_length) {
-        LOG_ERR("TXmessage size exceeds the maximum allowed payload size. Message length: %zu, Allowed length: %zu.\n", message_length, max_length);
-        return ERROR_CMD_LENGTH;
-    }
-
-    size_t cmd_size = sizeof(AT_TX) + message_length; 
-
-    char cmd[max_length];
-
-    snprintf(cmd, cmd_size, "%s%s", AT_TX, TXmessage);
-
-    LOG_INF("Send Argos message: %s\n", TXmessage);
-    
-    if (send_command(dev, cmd, cmd_size, true) != 0) {
-        LOG_ERR("Failed to send the message command.\n");
-        return -1;
-    }
-
-    return 0;
-}
-
-int argos_send_cmd(const struct device *dev, const char *command) {
-    size_t message_length = strlen(command);
-    const size_t max_length = ARGOS_SMD_BUF_SIZE;
-    
-    if (message_length > max_length) {
-        LOG_ERR("TXmessage size exceeds the maximum allowed payload size. Message length: %zu, Allowed length: %zu.\n", message_length, max_length);
-        return ERROR_CMD_LENGTH;
-    }
-    
-    if (send_command(dev, (uint8_t*)command, message_length, true) != 0) {
-        LOG_ERR("Failed to send the message command.\n");
-        return -1;
-    }
-
-    return 0;
-}
-
-int build_write_cmd(const char *cmd, const char *data,  char *cmd_buffer, size_t buffer_size) {
-		size_t message_length = strlen(cmd) + strlen(data) + WRITE_CMD_SIZE_TO_ADD;
-
-
-    if (message_length > buffer_size) {
-        LOG_ERR("Command size exceeds the provided buffers size. Message length: %zu, Provided length: %zu.\n", message_length, buffer_size);
-        return ERROR_CMD_LENGTH;
-    }
-
-    
-    if (buffer_size > ARGOS_SMD_BUF_SIZE) {
-        LOG_ERR("Command size exceeds the maximum allowed payload size. Message length: %zu, Provided length: %zu.\n",ARGOS_SMD_BUF_SIZE , buffer_size);
-        return ERROR_CMD_LENGTH;
-    }
-		
-    snprintf(cmd_buffer, buffer_size, "%s=%s\n\r", cmd, data);
-    return 0;
-}
-
-int argos_set_address(const struct device *dev, const char* address) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
-    LOG_INF("Setting Argos address to %s", address);
-    if (build_write_cmd(AT_ADDR, address, cmd,  sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
-}
-
-int argos_set_serial_number(const struct device *dev, const char* serial_number) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
-    LOG_INF("Setting Argos serial number to %s", serial_number);
-    if (build_write_cmd(AT_SN, serial_number, cmd,  sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
-}
-
-int argos_set_id(const struct device *dev, const char* id) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
-    LOG_INF("Setting Argos ID to %s", id);
-    if (build_write_cmd(AT_ID, id, cmd,  sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
-}
-
-int argos_set_radioconf(const struct device *dev, const char* rconf) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
-    LOG_INF("Setting Argos radio config to %s", rconf);
-    if (build_write_cmd(AT_RCONF, rconf, cmd,  sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
-}
-
-int argos_set_saveradioconf(const struct device *dev, const char* saveconf) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
-    LOG_INF("Save radio config to %s", saveconf);
-    if (build_write_cmd(AT_SAVE_RCONF, saveconf, cmd,  sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
-}
-
-int argos_set_prepass_enable(const struct device *dev, const char* prepass) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
-    LOG_INF("Setting Argos prepass enable to %s", prepass);
-    if (build_write_cmd(AT_PREPASS_EN, prepass, cmd,  sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
-}
-
-int argos_set_udate(const struct device *dev, const char* datetime) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
-    LOG_INF("Setting Argos Datetime to %s", datetime);
-    if (build_write_cmd(AT_UDATE, datetime, cmd,  sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
-}
-
-int argos_set_lpm(const struct device *dev, const char* lpm) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
-    LOG_INF("Setting Argos Low power profile to %s", lpm);
-    if (build_write_cmd(AT_LPM, lpm, cmd,  sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
-}
-
-int argos_set_mc(const struct device *dev, const char* mc) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
-    LOG_INF("Setting Argos Mac Counter to %s", mc);
-    if (build_write_cmd(AT_MC, mc, cmd,  sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
-}
-
-int argos_set_tcxo_wu(const struct device *dev, const char* tcxo_wu) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
-    LOG_INF("Setting Argos TCXO warmup to %s", tcxo_wu);
-    if (build_write_cmd(AT_TCXO_WU, tcxo_wu, cmd,  sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
-}
-
-int argos_set_kmac(const struct device *dev, const char* kmac) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
-    LOG_INF("Setting Argos KMAC to %s", kmac);
-    if (build_write_cmd(AT_KMAC, kmac, cmd,  sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
-}
-
-int argos_set_cw(const struct device *dev, const char* cw) {
-    char cmd[ARGOS_SMD_BUF_SIZE];
-    int result = 0;
-
-    LOG_INF("Setting Argos set Continuous wave RF test to %s", cw);
-    if (build_write_cmd(AT_CW, cw, cmd,  sizeof(cmd)) == 0) {
-        send_command(dev, cmd, sizeof(cmd), true);
-    } else {
-        LOG_ERR("Failed to build the command.\n");
-        result = ERROR_CMD_BUILD;
-    }
-
-    return result;
+	LOG_INF("Transmitting Following Message: %s", paylod);
+	return send_set_cmd(dev, AT_TX, paylod);
 }
 
 static int argos_smd_init(const struct device *dev)
@@ -612,25 +385,48 @@ static int argos_smd_init(const struct device *dev)
 		return -ENODEV;
 	}
 
+	/* Configure optional wakeup GPIO if present */
+	if (cfg->wakeup_gpio.port != NULL) {
+		if (!gpio_is_ready_dt(&cfg->wakeup_gpio)) {
+			LOG_ERR("Wakeup GPIO is not ready");
+			return -ENODEV;
+		}
+
+		int ret = gpio_pin_configure_dt(&cfg->wakeup_gpio, GPIO_OUTPUT_INACTIVE);
+		if (ret != 0) {
+			LOG_ERR("Failed to configure wakeup GPIO (error: %d)", ret);
+			return ret;
+		}
+
+		LOG_INF("Wakeup GPIO configured (initially LOW)");
+	} else {
+		LOG_INF("No wakeup GPIO configured");
+	}
+
 	argos_smd_uart_flush(dev);
 
 	drv_data->response.len = 0;
-	drv_data->status = RESPONSE_CLEAR;
+	atomic_set(&drv_data->status, RESPONSE_CLEAR);
 
-	uart_irq_callback_user_data_set(cfg->uart_dev, uart_rx_handler, (void*) dev);
+	int ret = uart_irq_callback_user_data_set(cfg->uart_dev, uart_rx_handler, (void *)dev);
+	if (ret != 0) {
+		return ret;
+	}
+
 	uart_irq_rx_enable(cfg->uart_dev);
 
 	return 0;
 }
 
-#define ARGOS_SMD_DEFINE(inst)                                                                      \
-	static struct argos_smd_data argos_smd_data_##inst = {                                       \
-	};                                                                                         \
-	static const struct argos_smd_config argos_smd_config_##inst = {                             \
+#define ARGOS_SMD_DEFINE(inst)                                                                     \
+	static struct argos_smd_data argos_smd_data_##inst = {};                                   \
+	static const struct argos_smd_config argos_smd_config_##inst = {                           \
 		.uart_dev = DEVICE_DT_GET(DT_INST_BUS(inst)),                                      \
+		.wakeup_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, wakeup_gpios, {0}),                 \
 	};                                                                                         \
                                                                                                    \
-	DEVICE_DT_INST_DEFINE(inst, &argos_smd_init, NULL, &argos_smd_data_##inst,                   \
-			      &argos_smd_config_##inst, POST_KERNEL, ARGOS_SMD_INIT_PRIORITY, NULL);
+	DEVICE_DT_INST_DEFINE(inst, &argos_smd_init, NULL, &argos_smd_data_##inst,                 \
+			      &argos_smd_config_##inst, POST_KERNEL, ARGOS_SMD_INIT_PRIORITY,      \
+			      NULL);
 
 DT_INST_FOREACH_STATUS_OKAY(ARGOS_SMD_DEFINE)

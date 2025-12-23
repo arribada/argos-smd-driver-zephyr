@@ -9,47 +9,47 @@
 
 #define UART_NODE DT_NODELABEL(uart0)
 
-const static struct device *dev     = DEVICE_DT_GET(UART_NODE);
+const static struct device *dev = DEVICE_DT_GET(UART_NODE);
 const static struct device *dev_smd = DEVICE_DT_GET_ONE(arribada_argossmd);
 
 extern void uart_emul_reply(struct k_timer * /*timer_id*/)
 {
-    char input[] = "+OK\n";
-    uart_emul_put_rx_data(dev, (uint8_t *)input, sizeof(input));
+	char input[] = "+OK\n";
+	uart_emul_put_rx_data(dev, (uint8_t *)input, sizeof(input));
 }
 
 K_TIMER_DEFINE(uart_emul_reply_timer, uart_emul_reply, NULL);
 
 void *init()
 {
-    zassert_true(device_is_ready(dev));
+	zassert_true(device_is_ready(dev_smd));
+	zassert_true(device_is_ready(dev));
 
-    uart_emul_flush_rx_data(dev);
-    uart_emul_flush_tx_data(dev);
-    uart_emul_set_release_buffer_on_timeout(dev, true);
+	uart_emul_flush_rx_data(dev);
+	uart_emul_flush_tx_data(dev);
+	uart_emul_set_release_buffer_on_timeout(dev, true);
 
-    return NULL;
+	return NULL;
 }
 
 ZTEST(comms, test_basic)
 {
-    char out[ARGOS_SMD_BUF_SIZE];
+	char out[ARGOS_SMD_BUF_SIZE];
 
-    k_timer_start(&uart_emul_reply_timer, K_MSEC(10), K_NO_WAIT);
-    char msg[9] = "FFFFFFFF";
-    zassert_ok(argos_send_message(dev_smd, msg));
+	k_timer_start(&uart_emul_reply_timer, K_MSEC(10), K_NO_WAIT);
+	char msg[9] = "FFFFFFFF";
+	zassert_ok(argos_send_payload(dev_smd, msg));
 
-    char expected[] = "AT+TX=FFFFFFFF";
-    uart_emul_get_tx_data(dev, (uint8_t *)out, sizeof(out));
-    zassert_true(memcmp(expected, out, sizeof(expected)));
+	char expected[] = "AT+TX=FFFFFFFF";
+	uart_emul_get_tx_data(dev, (uint8_t *)out, sizeof(out));
+	zassert_true(memcmp(expected, out, sizeof(expected)));
 
-    k_timer_start(&uart_emul_reply_timer, K_MSEC(10), K_NO_WAIT);
-    char msg2[] = "FFFF";
-    zassert_ok(argos_set_address(dev_smd, msg2));
-    uart_emul_get_tx_data(dev, (uint8_t *)out, sizeof(out));
-    char expected2[] = "AT+ADDR=FFF";                    
-    zassert_true(memcmp(expected2, out, sizeof(expected2)));
-    
+	k_timer_start(&uart_emul_reply_timer, K_MSEC(10), K_NO_WAIT);
+	char msg2[] = "FFFF";
+	zassert_ok(argos_set_address(dev_smd, msg2));
+	uart_emul_get_tx_data(dev, (uint8_t *)out, sizeof(out));
+	char expected2[] = "AT+ADDR=FFF";
+	zassert_true(memcmp(expected2, out, sizeof(expected2)));
 }
 
 ZTEST_SUITE(comms, NULL, init, NULL, NULL, NULL);

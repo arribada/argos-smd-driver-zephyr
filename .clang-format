@@ -1,3 +1,4 @@
+# Taken from https://github.com/zephyrproject-rtos/zephyr/blob/main/.clang-format
 # SPDX-License-Identifier: Apache-2.0
 #
 # Note: The list of ForEachMacros can be obtained using:
