@@ -178,6 +178,31 @@ void argos_smd_set_callback(const struct device *dev, argos_smd_callback_t callb
 			    void *user_data);
 
 /**
+ * @brief Enable the wakeup pin (set it HIGH)
+ *
+ * This function sets the wakeup GPIO pin to high state if it has been configured
+ * in the devicetree. Call this before communicating with the module when it is
+ * in low power mode (AT+LPM). The pin will remain high until argos_smd_wakeup_disable
+ * is called.
+ *
+ * @param dev Pointer to the device structure.
+ * @return 0 on success, -ENOTSUP if no wakeup GPIO is configured, negative errno on error.
+ */
+int argos_smd_wakeup_enable(const struct device *dev);
+
+/**
+ * @brief Disable the wakeup pin (set it LOW)
+ *
+ * This function sets the wakeup GPIO pin to low state if it has been configured
+ * in the devicetree. Call this when you're done communicating with the module
+ * to allow it to enter low power mode.
+ *
+ * @param dev Pointer to the device structure.
+ * @return 0 on success, -ENOTSUP if no wakeup GPIO is configured, negative errno on error.
+ */
+int argos_smd_wakeup_disable(const struct device *dev);
+
+/**
  * @brief Read version of Argos SMD.
  * This function sends the command "AT+VERSION=?" to check if Argos device is ready
  *

@@ -15,6 +15,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <zephyr/drivers/uart.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
 
 #include <argos-smd/argos_smd.h>
@@ -34,6 +35,44 @@ static void argos_smd_uart_flush(const struct device *dev)
 	memset(&drv_data->response.data, 0, ARGOS_SMD_BUF_SIZE);
 
 	LOG_DBG("UART RX buffer flushed.");
+}
+
+int argos_smd_wakeup_enable(const struct device *dev)
+{
+	const struct argos_smd_config *cfg = dev->config;
+
+	if (cfg->wakeup_gpio.port == NULL) {
+		LOG_WRN("No wakeup GPIO configured");
+		return -ENOTSUP;
+	}
+
+	int ret = gpio_pin_set_dt(&cfg->wakeup_gpio, 1);
+	if (ret != 0) {
+		LOG_ERR("Failed to enable wakeup pin (error: %d)", ret);
+		return ret;
+	}
+
+	LOG_DBG("Wakeup pin enabled (set HIGH)");
+	return 0;
+}
+
+int argos_smd_wakeup_disable(const struct device *dev)
+{
+	const struct argos_smd_config *cfg = dev->config;
+
+	if (cfg->wakeup_gpio.port == NULL) {
+		LOG_WRN("No wakeup GPIO configured");
+		return -ENOTSUP;
+	}
+
+	int ret = gpio_pin_set_dt(&cfg->wakeup_gpio, 0);
+	if (ret != 0) {
+		LOG_ERR("Failed to disable wakeup pin (error: %d)", ret);
+		return ret;
+	}
+
+	LOG_DBG("Wakeup pin disabled (set LOW)");
+	return 0;
 }
 
 static void uart_rx_handler(const struct device *dev, void *dev_smd)
@@ -346,6 +385,24 @@ static int argos_smd_init(const struct device *dev)
 		return -ENODEV;
 	}
 
+	/* Configure optional wakeup GPIO if present */
+	if (cfg->wakeup_gpio.port != NULL) {
+		if (!gpio_is_ready_dt(&cfg->wakeup_gpio)) {
+			LOG_ERR("Wakeup GPIO is not ready");
+			return -ENODEV;
+		}
+
+		int ret = gpio_pin_configure_dt(&cfg->wakeup_gpio, GPIO_OUTPUT_INACTIVE);
+		if (ret != 0) {
+			LOG_ERR("Failed to configure wakeup GPIO (error: %d)", ret);
+			return ret;
+		}
+
+		LOG_INF("Wakeup GPIO configured (initially LOW)");
+	} else {
+		LOG_INF("No wakeup GPIO configured");
+	}
+
 	argos_smd_uart_flush(dev);
 
 	drv_data->response.len = 0;
@@ -365,6 +422,7 @@ static int argos_smd_init(const struct device *dev)
 	static struct argos_smd_data argos_smd_data_##inst = {};                                   \
 	static const struct argos_smd_config argos_smd_config_##inst = {                           \
 		.uart_dev = DEVICE_DT_GET(DT_INST_BUS(inst)),                                      \
+		.wakeup_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, wakeup_gpios, {0}),                 \
 	};                                                                                         \
                                                                                                    \
 	DEVICE_DT_INST_DEFINE(inst, &argos_smd_init, NULL, &argos_smd_data_##inst,                 \

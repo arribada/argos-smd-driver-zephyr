@@ -61,10 +61,29 @@ void *setup(void)
 	zassert_true(device_is_ready(dev));
 	argos_smd_set_callback(dev, read_callback, NULL);
 
+	/* Enable wakeup pin for all tests */
+	int ret = argos_smd_wakeup_enable(dev);
+	if (ret == 0) {
+		printk("Wakeup pin enabled for tests\n");
+	} else if (ret == -ENOTSUP) {
+		printk("No wakeup pin configured\n");
+	}
+
 	return NULL;
 }
 
-ZTEST_SUITE(argos_smd, NULL, setup, NULL, NULL, NULL);
+void teardown(void *fixture)
+{
+	ARG_UNUSED(fixture);
+
+	/* Disable wakeup pin after all tests */
+	int ret = argos_smd_wakeup_disable(dev);
+	if (ret == 0) {
+		printk("Wakeup pin disabled after tests\n");
+	}
+}
+
+ZTEST_SUITE(argos_smd, NULL, setup, NULL, NULL, teardown);
 
 // Required for the ACM CDC UART to start and connected to
 // before twister starts looking at it

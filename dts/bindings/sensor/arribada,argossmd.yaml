@@ -4,3 +4,15 @@ description: |
 compatible: "arribada,argossmd"
 
 include: [base.yaml, uart-device.yaml]
+
+properties:
+  wakeup-gpios:
+    type: phandle-array
+    description: |
+      Optional GPIO used to wake up the Argos SMD module from low power mode.
+      When the module is configured to use low power mode (AT+LPM), use the
+      argos_smd_wakeup_enable() function to set this pin high before
+      communicating with the module, and argos_smd_wakeup_disable() to set
+      it low when done to allow the module to enter low power mode.
+      If not specified, no GPIO control is available and the module should be
+      managed by external circuitry or kept always awake.

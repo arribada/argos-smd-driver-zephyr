@@ -5,6 +5,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
+#include <zephyr/drivers/gpio.h>
 
 #include <argos-smd/argos_smd.h>
 
@@ -64,6 +65,7 @@ struct argos_smd_data {
 struct argos_smd_config {
 	struct argos_smd_data *data;
 	const struct device *uart_dev;
+	const struct gpio_dt_spec wakeup_gpio;
 };
 
 // Set command to be transmitted

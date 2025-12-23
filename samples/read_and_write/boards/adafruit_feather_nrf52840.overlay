@@ -15,6 +15,12 @@
 
     argossmd {
         compatible = "arribada,argossmd";
+        /* Optional: Uncomment to enable GPIO wakeup pin control
+         * wakeup-gpios = <&gpio0 26 GPIO_ACTIVE_HIGH>;
+         *
+         * Use argos_smd_wakeup_enable() to set HIGH before communicating
+         * Use argos_smd_wakeup_disable() to set LOW when done
+         */
     };
 };
 

@@ -50,9 +50,51 @@ Now add the driver to your DTS, or a create an overlay:
 
     argossmd {
         compatible = "arribada,argossmd";
+        /* Optional: GPIO to wake up module from low power mode */
+        /* wakeup-gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>; */
     };
 };
 ```
+
+### Optional Wakeup GPIO
+
+If your Argos SMD module is configured to use low power mode (`AT+LPM`), you can optionally configure a GPIO pin to wake it up before communication.
+
+To enable the wakeup GPIO, add the `wakeup-gpios` property to your devicetree:
+
+```
+argossmd {
+    compatible = "arribada,argossmd";
+    wakeup-gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>;
+};
+```
+
+Then in your code, you need to manually control the wakeup pin:
+
+```c
+const struct device *dev_smd = DEVICE_DT_GET_ONE(arribada_argossmd);
+
+/* Enable wakeup pin before communicating with the module */
+int ret = argos_smd_wakeup_enable(dev_smd);
+if (ret == 0) {
+    /* Pin successfully enabled, module is now awake */
+}
+
+/* Perform your AT commands here */
+argos_read_ping(dev_smd);
+argos_set_address(dev_smd, "ABCDEF01");
+/* ... */
+
+/* Disable wakeup pin when done to allow low power mode */
+argos_smd_wakeup_disable(dev_smd);
+```
+
+This approach gives you full control over when the module is awake, allowing you to:
+- Keep the module awake for multiple commands (more efficient)
+- Decide when to let it enter low power mode
+- Optimize power consumption based on your application needs
+
+If no wakeup GPIO is configured, the functions will return `-ENOTSUP` and you can continue normal operation.
 
 You can now add `#include <argos-smd/argos_smd.h>` to you code and use the API outlined in the [docs](https://arribada.github.io/argos-smd-driver-zephyr). Also see `samples/read_and_write` for an basic example.
 
