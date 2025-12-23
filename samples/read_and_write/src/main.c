@@ -35,6 +35,14 @@ int main(void)
 
 	argos_smd_set_callback(dev_smd, read_callback, NULL);
 
+	/* Enable wakeup pin to communicate with the module */
+	int ret = argos_smd_wakeup_enable(dev_smd);
+	if (ret == 0) {
+		LOG_INF("Wakeup pin enabled");
+	} else if (ret == -ENOTSUP) {
+		LOG_INF("No wakeup pin configured, continuing...");
+	}
+
 	/////////////////////////////////////////////////
 
 	argos_read_ping(dev_smd);
@@ -55,8 +63,15 @@ int main(void)
 
 	argos_read_address(dev_smd);
 
+	/* First response: +ADDR=abcdef01 */
 	k_msgq_get(&response_msgq, out, K_FOREVER);
 	if (strcmp(out, "+ADDR=abcdef01") != 0) {
+		LOG_ERR("Invalid Response: %s", out);
+	}
+
+	/* Second response: +OK */
+	k_msgq_get(&response_msgq, out, K_FOREVER);
+	if (strcmp(out, "+OK") != 0) {
 		LOG_ERR("Invalid Response: %s", out);
 	}
 
@@ -65,9 +80,24 @@ int main(void)
 	char msg[9] = "FFFFFFFF";
 	argos_send_payload(dev_smd, msg);
 
+	/* First response: +OK */
 	k_msgq_get(&response_msgq, out, K_FOREVER);
 	if (strcmp(out, "+OK") != 0) {
 		LOG_ERR("Invalid Response: %s", out);
+	}
+
+	/* Second response: +TX=0,FFFFFFFF => +TX=0 = success*/
+	k_msgq_get(&response_msgq, out, K_FOREVER);
+	if (strncmp(out, "+TX=0", 5) != 0) {
+		LOG_ERR("Invalid TX Response: %s", out);
+	}
+
+	/////////////////////////////////////////////////
+
+	/* Disable wakeup pin when done communicating */
+	ret = argos_smd_wakeup_disable(dev_smd);
+	if (ret == 0) {
+		LOG_INF("Wakeup pin disabled, module can enter low power mode");
 	}
 
 	LOG_INF("Done");
