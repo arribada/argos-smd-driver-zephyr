@@ -30,7 +30,8 @@ static void argos_smd_uart_flush(const struct device *dev)
 	const struct argos_smd_config *cfg = dev->config;
 	struct argos_smd_data *drv_data = dev->data;
 
-	while (uart_fifo_read(cfg->uart_dev, NULL, 1) > 0) {
+	uint8_t tmp;
+	while (uart_fifo_read(cfg->uart_dev, &tmp, 1) > 0) {
 	}
 	memset(&drv_data->response.data, 0, ARGOS_SMD_BUF_SIZE);
 
