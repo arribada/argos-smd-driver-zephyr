@@ -8,7 +8,7 @@
 	"onCreateCommand": "bash -c 'west update'",
 	"postStartCommand": "bash",
 	"customizations": {
-		"vscodeu": {
+		"vscode": {
 			"extensions": [
 				"twxs.cmake",
 				"llvm-vs-code-extensions.vscode-clangd",
@@ -31,12 +31,9 @@
     ],
     "mounts" : [
         {
-            "source": "${localEnv:SSH_AUTH_SOCK}",
-            "target": "/ssh-agent",
+            "source": "${localEnv:HOME}/.ssh",
+            "target": "/home/user/.ssh",
             "type": "bind"
         }
-    ],
-    "remoteEnv": {
-        "SSH_AUTH_SOCK": "/ssh-agent"
-    }
+    ]
 }    

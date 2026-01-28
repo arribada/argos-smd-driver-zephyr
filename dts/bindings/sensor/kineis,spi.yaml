@@ -1,0 +1,39 @@
+description: |
+  Kineis (Argos) module SPI interface.
+
+  Provides SPI communication with Kineis modules using Protocol A+ framing.
+  Supports application commands and DFU (Device Firmware Update) operations.
+
+  Protocol A+ frame format:
+  Request:  | MAGIC (0xAA) | SEQ | CMD | LEN | DATA[0..LEN-1] | CRC8 |
+  Response: | MAGIC (0x55) | SEQ | STATUS | LEN | DATA[0..LEN-1] | CRC8 |
+
+compatible: "kineis,spi"
+
+include: spi-device.yaml
+
+properties:
+  duplex:
+    type: int
+    default: 0
+    description: |
+      Duplex mode: 0 = full duplex (default), 2048 = half duplex.
+
+  frame-format:
+    type: int
+    default: 0
+    description: |
+      SPI frame format: 0 = Motorola (default), 1 = TI.
+
+  irq-gpios:
+    type: phandle-array
+    description: |
+      Optional interrupt/ready GPIO pin. When configured, the driver will
+      wait for this pin to be asserted before reading a response from the device.
+      If not specified, the driver uses a polling approach.
+
+  reset-gpios:
+    type: phandle-array
+    description: |
+      Optional hardware reset GPIO pin. When configured, can be used to
+      perform a hardware reset of the Kineis module.

@@ -1,0 +1,70 @@
+/*
+ * Copyright (c) 2025 Arribada Initiative
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Devicetree overlay for Kineis SPI DFU test on Adafruit Feather nRF52840
+ *
+ * SPI Wiring (Feather -> Kineis module):
+ * - SCK  (D13/P0.13) -> SPI_CLK
+ * - MOSI (D12/P0.14) -> SPI_MOSI
+ * - MISO (D11/P0.15) -> SPI_MISO
+ * - CS   (D10/P0.27) -> SPI_CS (directly controlled)
+ * - IRQ  (D9/P0.26)  -> IRQ/READY (optional)
+ * - RST  (D6/P0.07)  -> RESET (optional)
+ */
+
+&pinctrl {
+	spi1_default: spi1_default {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK, 0, 13)>,
+				<NRF_PSEL(SPIM_MOSI, 0, 14)>,
+				<NRF_PSEL(SPIM_MISO, 0, 15)>;
+		};
+	};
+
+	spi1_sleep: spi1_sleep {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK, 0, 13)>,
+				<NRF_PSEL(SPIM_MOSI, 0, 14)>,
+				<NRF_PSEL(SPIM_MISO, 0, 15)>;
+			low-power-enable;
+		};
+	};
+};
+
+&spi1 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	pinctrl-0 = <&spi1_default>;
+	pinctrl-1 = <&spi1_sleep>;
+	pinctrl-names = "default", "sleep";
+	cs-gpios = <&gpio0 27 GPIO_ACTIVE_LOW>;
+
+	kineis: kineis@0 {
+		compatible = "kineis,spi";
+		reg = <0>;
+		spi-max-frequency = <100000>;  /* 100 kHz - slow for debugging */
+		irq-gpios = <&gpio0 26 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio0 7 GPIO_ACTIVE_LOW>;
+	};
+};
+
+/* Alternative pin mapping for Feather headers:
+ *
+ * Feather Pin | nRF Pin | Function
+ * ------------|---------|----------
+ * SCK         | P0.13   | SPI Clock
+ * MOSI        | P0.14   | SPI Master Out
+ * MISO        | P0.15   | SPI Master In
+ * D10         | P0.27   | Chip Select
+ * D9          | P0.26   | IRQ/Ready
+ * D6          | P0.07   | Reset
+ *
+ * Analog pins (if needed for other purposes):
+ * - A0: P0.04
+ * - A1: P0.05
+ * - A2: P0.30
+ * - A3: P0.28
+ * - A4: P0.02
+ * - A5: P0.03
+ */

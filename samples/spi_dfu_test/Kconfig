@@ -1,0 +1,17 @@
+# Copyright (c) 2025 Arribada Initiative
+# SPDX-License-Identifier: Apache-2.0
+
+mainmenu "Kineis SPI DFU Test Configuration"
+
+source "Kconfig.zephyr"
+
+config KINEIS_SPI_DFU_TEST_FULL_UPDATE
+    bool "Enable full DFU update test"
+    default n
+    help
+      When enabled, the test will perform a complete firmware update
+      using the provided firmware image. This is a destructive operation
+      that will erase and reprogram the Kineis module's flash.
+
+      WARNING: Only enable this if you have a valid firmware image
+      and want to actually update the module.
