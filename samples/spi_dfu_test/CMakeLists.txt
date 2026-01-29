@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.20.0)
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
-project(kineis_spi_dfu_test)
+project(argos_smd_spi_dfu_test)
 
 # Add external firmware file if provided
 if(DEFINED FIRMWARE_FILE)

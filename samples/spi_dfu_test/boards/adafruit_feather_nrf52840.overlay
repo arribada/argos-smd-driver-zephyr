@@ -2,30 +2,37 @@
  * Copyright (c) 2025 Arribada Initiative
  * SPDX-License-Identifier: Apache-2.0
  *
- * Devicetree overlay for Kineis SPI DFU test on Adafruit Feather nRF52840
+ * Devicetree overlay for Argos SMD SPI DFU test on Adafruit Feather nRF52840
  *
- * SPI Wiring (Feather -> Kineis module):
- * - SCK  (D13/P0.13) -> SPI_CLK
- * - MOSI (D12/P0.14) -> SPI_MOSI
- * - MISO (D11/P0.15) -> SPI_MISO
- * - CS   (D10/P0.27) -> SPI_CS (directly controlled)
- * - IRQ  (D9/P0.26)  -> IRQ/READY (optional)
- * - RST  (D6/P0.07)  -> RESET (optional)
+ * SPI Wiring (Feather -> Argos SMD module):
+ * - SCK  (P0.14) -> SPI_CLK  (STM32 PA1)
+ * - MOSI (P0.13) -> SPI_MOSI (STM32 PB5)
+ * - MISO (P0.15) -> SPI_MISO (STM32 PB4)
+ * - CS   (P0.10) -> SPI_NSS  (STM32 PA15)
+ * - IRQ  (P0.26) -> IRQ/READY (optional)
+ * - RST  (P0.07) -> RESET (optional)
+ *
+ * NOTE: P0.10 is NFC2 by default, must disable NFC to use as GPIO
  */
+
+/* Disable NFC to use P0.09/P0.10 as GPIO */
+&uicr {
+	nfct-pins-as-gpios;
+};
 
 &pinctrl {
 	spi1_default: spi1_default {
 		group1 {
-			psels = <NRF_PSEL(SPIM_SCK, 0, 13)>,
-				<NRF_PSEL(SPIM_MOSI, 0, 14)>,
+			psels = <NRF_PSEL(SPIM_SCK, 0, 14)>,
+				<NRF_PSEL(SPIM_MOSI, 0, 13)>,
 				<NRF_PSEL(SPIM_MISO, 0, 15)>;
 		};
 	};
 
 	spi1_sleep: spi1_sleep {
 		group1 {
-			psels = <NRF_PSEL(SPIM_SCK, 0, 13)>,
-				<NRF_PSEL(SPIM_MOSI, 0, 14)>,
+			psels = <NRF_PSEL(SPIM_SCK, 0, 14)>,
+				<NRF_PSEL(SPIM_MOSI, 0, 13)>,
 				<NRF_PSEL(SPIM_MISO, 0, 15)>;
 			low-power-enable;
 		};
@@ -38,10 +45,10 @@
 	pinctrl-0 = <&spi1_default>;
 	pinctrl-1 = <&spi1_sleep>;
 	pinctrl-names = "default", "sleep";
-	cs-gpios = <&gpio0 27 GPIO_ACTIVE_LOW>;
+	cs-gpios = <&gpio0 10 GPIO_ACTIVE_LOW>;
 
-	kineis: kineis@0 {
-		compatible = "kineis,spi";
+	argos_smd: argos-smd@0 {
+		compatible = "arribada,argos-smd-spi";
 		reg = <0>;
 		spi-max-frequency = <100000>;  /* 100 kHz - slow for debugging */
 		irq-gpios = <&gpio0 26 GPIO_ACTIVE_HIGH>;

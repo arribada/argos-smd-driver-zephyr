@@ -1,4 +1,4 @@
-# Add argos-smd directory if UART or SPI driver is enabled
-if(CONFIG_ARGOS_SMD OR CONFIG_KINEIS_SPI)
+# Add argos-smd directory if driver is enabled (UART or SPI)
+if(CONFIG_ARGOS_SMD)
     add_subdirectory(argos-smd)
 endif()

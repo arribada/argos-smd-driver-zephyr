@@ -1,69 +1,80 @@
-config ARGOS_SMD
-    bool "Enable argos smd peripheral"
-    depends on UART_INTERRUPT_DRIVEN
+# Copyright (c) 2025 Arribada Initiative
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig ARGOS_SMD
+    bool "Argos SMD satellite modem driver"
+    help
+      Enable Argos SMD satellite modem driver. This driver supports
+      communication with Argos SMD modules via UART (AT commands) or
+      SPI (Protocol A+).
 
 if ARGOS_SMD
-    module = ARGOS_SMD
-    module-str = Argos Smd
-    source "subsys/logging/Kconfig.template.log_config"
 
-config ARGOS_DFU
-    bool "Enable Argos SMD Device Firmware Update (DFU) support via UART"
-    depends on ARGOS_SMD
+choice ARGOS_SMD_TRANSPORT
+    prompt "Transport interface"
+    default ARGOS_SMD_UART
+
+config ARGOS_SMD_UART
+    bool "UART (AT commands)"
+    depends on UART_INTERRUPT_DRIVEN
     help
-      Enable Device Firmware Update (DFU) support for Argos SMD modules.
-      This provides an API to perform over-the-air (OTA) firmware updates
-      via UART using AT commands. The DFU process includes entering
-      bootloader mode, transferring firmware chunks, and verifying CRC32.
+      Use UART with AT commands for communication with Argos SMD modules.
+      This is the standard interface supporting all AT commands.
 
-if ARGOS_DFU
-    module = ARGOS_DFU
-    module-str = Argos DFU
-    source "subsys/logging/Kconfig.template.log_config"
-endif
-
-endif
-
-# Kineis SPI Driver (alternative to UART)
-config KINEIS_SPI
-    bool "Enable Kineis SPI driver"
+config ARGOS_SMD_SPI
+    bool "SPI (Protocol A+)"
     depends on SPI
     help
-      Enable SPI interface driver for Kineis (Argos) modules.
-      Uses Protocol A+ framing with magic bytes, sequence numbers,
-      and CRC-8 CCITT checksums.
+      Use SPI with Protocol A+ binary framing for communication.
+      Frame format: [MAGIC(1)] [SEQ(1)] [CMD(1)] [LEN(1)] [DATA(0-250)] [CRC(1)]
+      Uses CRC-8 CCITT (polynomial 0x07).
 
-if KINEIS_SPI
-    module = KINEIS_SPI
-    module-str = Kineis SPI
-    source "subsys/logging/Kconfig.template.log_config"
+endchoice
 
-config KINEIS_SPI_INIT_PRIORITY
-    int "Kineis SPI driver init priority"
+# Logging for main driver
+module = ARGOS_SMD
+module-str = Argos SMD
+source "subsys/logging/Kconfig.template.log_config"
+
+# UART-specific configuration
+if ARGOS_SMD_UART
+
+# No additional UART-specific configs needed for now
+
+endif # ARGOS_SMD_UART
+
+# SPI-specific configuration
+if ARGOS_SMD_SPI
+
+config ARGOS_SMD_SPI_INIT_PRIORITY
+    int "Argos SMD SPI driver init priority"
     default 60
     help
-      Initialization priority for Kineis SPI driver.
+      Initialization priority for Argos SMD SPI driver.
 
-config KINEIS_DFU_SPI
-    bool "Enable Kineis DFU via SPI"
-    depends on KINEIS_SPI
+endif # ARGOS_SMD_SPI
+
+# DFU support (works with both UART and SPI)
+config ARGOS_SMD_DFU
+    bool "Enable Device Firmware Update (DFU) support"
     help
-      Enable Device Firmware Update (DFU) support for Kineis modules via SPI.
-      This provides bootloader communication using DFU commands (0x30-0x3F)
-      including flash erase, write, verify, and jump to application.
+      Enable Device Firmware Update (DFU) support for Argos SMD modules.
+      This provides an API to perform firmware updates via the selected
+      transport interface (UART or SPI).
 
       DFU Sequence:
       1. Enter bootloader (CMD_DFU_ENTER 0x3F)
       2. Ping bootloader (DFU_PING 0x30)
-      3. Erase flash (DFU_ERASE 0x32)
-      4. Write chunks (DFU_WRITE_REQ + DFU_WRITE_DATA)
-      5. Verify CRC (DFU_VERIFY 0x37)
-      6. Jump to app (DFU_JUMP 0x39)
+      3. Get bootloader info (DFU_GET_INFO 0x31)
+      4. Erase flash (DFU_ERASE 0x32)
+      5. Write chunks (DFU_WRITE_REQ + DFU_WRITE_DATA)
+      6. Verify CRC (DFU_VERIFY 0x37)
+      7. Jump to app (DFU_JUMP 0x39)
 
-if KINEIS_DFU_SPI
-    module = KINEIS_DFU
-    module-str = Kineis DFU SPI
+if ARGOS_SMD_DFU
+    module = ARGOS_SMD_DFU
+    module-str = Argos SMD DFU
     source "subsys/logging/Kconfig.template.log_config"
 endif
 
-endif
+endif # ARGOS_SMD

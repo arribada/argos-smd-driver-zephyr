@@ -12,9 +12,9 @@
 #include <string.h>
 #include <errno.h>
 
-#include <argos-smd/kineis_spi.h>
+#include <argos-smd/argos_smd_spi.h>
 
-LOG_MODULE_REGISTER(kineis_spi, CONFIG_KINEIS_SPI_LOG_LEVEL);
+LOG_MODULE_REGISTER(argos_smd_spi, CONFIG_ARGOS_SMD_LOG_LEVEL);
 
 /**
  * @brief Calculate CRC-8 CCITT checksum
@@ -22,7 +22,7 @@ LOG_MODULE_REGISTER(kineis_spi, CONFIG_KINEIS_SPI_LOG_LEVEL);
  * Polynomial: x^8 + x^2 + x + 1 (0x07)
  * Initial value: 0x00
  */
-uint8_t kineis_crc8_ccitt(const uint8_t *data, size_t len)
+uint8_t argos_spi_crc8_ccitt(const uint8_t *data, size_t len)
 {
 	uint8_t crc = 0x00;
 
@@ -49,7 +49,7 @@ static size_t build_request_frame(uint8_t *buf, uint8_t seq, uint8_t cmd,
 	size_t idx = 0;
 
 	/* Magic byte */
-	buf[idx++] = KINEIS_SPI_MAGIC_REQUEST;
+	buf[idx++] = ARGOS_SPI_MAGIC_REQUEST;
 
 	/* Sequence number */
 	buf[idx++] = seq;
@@ -67,7 +67,7 @@ static size_t build_request_frame(uint8_t *buf, uint8_t seq, uint8_t cmd,
 	}
 
 	/* Calculate CRC over magic, seq, cmd, len, and data */
-	buf[idx] = kineis_crc8_ccitt(buf, idx);
+	buf[idx] = argos_spi_crc8_ccitt(buf, idx);
 	idx++;
 
 	return idx;
@@ -77,17 +77,17 @@ static size_t build_request_frame(uint8_t *buf, uint8_t seq, uint8_t cmd,
  * @brief Parse a Protocol A+ response frame
  */
 static int parse_response_frame(const uint8_t *buf, size_t buf_len,
-				struct kineis_spi_response *resp)
+				struct argos_spi_response *resp)
 {
-	if (buf_len < KINEIS_SPI_HEADER_SIZE + KINEIS_SPI_CRC_SIZE) {
+	if (buf_len < ARGOS_SPI_HEADER_SIZE + ARGOS_SPI_CRC_SIZE) {
 		LOG_ERR("Response too short: %zu bytes", buf_len);
 		return -EINVAL;
 	}
 
 	/* Check magic byte */
-	if (buf[0] != KINEIS_SPI_MAGIC_RESPONSE) {
+	if (buf[0] != ARGOS_SPI_MAGIC_RESPONSE) {
 		LOG_ERR("Invalid magic byte: 0x%02X (expected 0x%02X)",
-			buf[0], KINEIS_SPI_MAGIC_RESPONSE);
+			buf[0], ARGOS_SPI_MAGIC_RESPONSE);
 		return -EPROTO;
 	}
 
@@ -97,13 +97,13 @@ static int parse_response_frame(const uint8_t *buf, size_t buf_len,
 	resp->len = buf[3];
 
 	/* Validate length */
-	if (resp->len > KINEIS_SPI_MAX_PAYLOAD) {
+	if (resp->len > ARGOS_SPI_MAX_PAYLOAD) {
 		LOG_ERR("Response payload too large: %u", resp->len);
 		return -EMSGSIZE;
 	}
 
 	/* Check if we have enough data */
-	size_t expected_len = KINEIS_SPI_HEADER_SIZE + resp->len + KINEIS_SPI_CRC_SIZE;
+	size_t expected_len = ARGOS_SPI_HEADER_SIZE + resp->len + ARGOS_SPI_CRC_SIZE;
 	if (buf_len < expected_len) {
 		LOG_ERR("Response incomplete: got %zu, expected %zu", buf_len, expected_len);
 		return -EINVAL;
@@ -118,7 +118,7 @@ static int parse_response_frame(const uint8_t *buf, size_t buf_len,
 	resp->crc = buf[4 + resp->len];
 
 	/* Verify CRC */
-	uint8_t calc_crc = kineis_crc8_ccitt(buf, 4 + resp->len);
+	uint8_t calc_crc = argos_spi_crc8_ccitt(buf, 4 + resp->len);
 	if (calc_crc != resp->crc) {
 		LOG_ERR("CRC mismatch: calculated 0x%02X, received 0x%02X",
 			calc_crc, resp->crc);
@@ -131,7 +131,7 @@ static int parse_response_frame(const uint8_t *buf, size_t buf_len,
 /**
  * @brief Wait for device to be ready (check IRQ pin if available)
  */
-static int wait_device_ready(const struct kineis_spi_config *cfg, k_timeout_t timeout)
+static int wait_device_ready(const struct argos_spi_config *cfg, k_timeout_t timeout)
 {
 	/* If IRQ/ready pin is configured, wait for it */
 	if (cfg->irq_gpio.port != NULL) {
@@ -152,10 +152,10 @@ static int wait_device_ready(const struct kineis_spi_config *cfg, k_timeout_t ti
 	return 0;
 }
 
-int kineis_spi_init(const struct device *dev)
+int argos_spi_init(const struct device *dev)
 {
-	const struct kineis_spi_config *cfg = dev->config;
-	struct kineis_spi_data *data = dev->data;
+	const struct argos_spi_config *cfg = dev->config;
+	struct argos_spi_data *data = dev->data;
 
 	/* Verify SPI bus is ready */
 	if (!spi_is_ready_dt(&cfg->spi)) {
@@ -195,20 +195,20 @@ int kineis_spi_init(const struct device *dev)
 	/* Initialize sequence number */
 	data->seq_num = 0;
 
-	LOG_INF("Kineis SPI initialized");
+	LOG_INF("Argos SMD SPI initialized");
 
 	return 0;
 }
 
-int kineis_spi_transact(const struct device *dev, uint8_t cmd,
+int argos_spi_transact(const struct device *dev, uint8_t cmd,
 			const uint8_t *tx_data, size_t tx_len,
 			uint8_t *rx_data, size_t *rx_len, uint8_t *status)
 {
-	const struct kineis_spi_config *cfg = dev->config;
-	struct kineis_spi_data *data = dev->data;
+	const struct argos_spi_config *cfg = dev->config;
+	struct argos_spi_data *data = dev->data;
 	int ret;
 
-	if (tx_len > KINEIS_SPI_MAX_PAYLOAD) {
+	if (tx_len > ARGOS_SPI_MAX_PAYLOAD) {
 		LOG_ERR("TX payload too large: %zu", tx_len);
 		return -EINVAL;
 	}
@@ -240,7 +240,7 @@ int kineis_spi_transact(const struct device *dev, uint8_t cmd,
 	}
 
 	/* Wait for device to be ready */
-	ret = wait_device_ready(cfg, K_MSEC(KINEIS_SPI_TIMEOUT_MS));
+	ret = wait_device_ready(cfg, K_MSEC(ARGOS_SPI_TIMEOUT_MS));
 	if (ret < 0) {
 		LOG_ERR("Device not ready: %d", ret);
 		goto unlock;
@@ -268,12 +268,12 @@ int kineis_spi_transact(const struct device *dev, uint8_t cmd,
 	 *
 	 * The slave uses TransmitReceive, so we must send 0xFF while reading.
 	 */
-	memset(data->tx_buf, 0xFF, KINEIS_SPI_MAX_FRAME_SIZE);  /* Dummy TX bytes */
+	memset(data->tx_buf, 0xFF, ARGOS_SPI_MAX_FRAME_SIZE);  /* Dummy TX bytes */
 	memset(data->rx_buf, 0xAB, sizeof(data->rx_buf));       /* Clear RX buffer */
 
 	struct spi_buf tx_dummy_buf = {
 		.buf = data->tx_buf,
-		.len = KINEIS_SPI_MAX_FRAME_SIZE,
+		.len = ARGOS_SPI_MAX_FRAME_SIZE,
 	};
 	struct spi_buf_set tx_dummy_set = {
 		.buffers = &tx_dummy_buf,
@@ -282,7 +282,7 @@ int kineis_spi_transact(const struct device *dev, uint8_t cmd,
 
 	struct spi_buf rx_spi_buf = {
 		.buf = data->rx_buf,
-		.len = KINEIS_SPI_MAX_FRAME_SIZE,
+		.len = ARGOS_SPI_MAX_FRAME_SIZE,
 	};
 	struct spi_buf_set rx_set = {
 		.buffers = &rx_spi_buf,
@@ -300,20 +300,20 @@ int kineis_spi_transact(const struct device *dev, uint8_t cmd,
 
 	/* Find response magic byte (skip any leading 0xFF padding) */
 	size_t rx_start = 0;
-	while (rx_start < KINEIS_SPI_MAX_FRAME_SIZE && data->rx_buf[rx_start] == 0xFF) {
+	while (rx_start < ARGOS_SPI_MAX_FRAME_SIZE && data->rx_buf[rx_start] == 0xFF) {
 		rx_start++;
 	}
 
-	if (rx_start >= KINEIS_SPI_MAX_FRAME_SIZE) {
+	if (rx_start >= ARGOS_SPI_MAX_FRAME_SIZE) {
 		LOG_ERR("No response received");
 		ret = -ETIMEDOUT;
 		goto unlock;
 	}
 
 	/* Parse response */
-	struct kineis_spi_response resp;
+	struct argos_spi_response resp;
 	ret = parse_response_frame(&data->rx_buf[rx_start],
-				   KINEIS_SPI_MAX_FRAME_SIZE - rx_start, &resp);
+				   ARGOS_SPI_MAX_FRAME_SIZE - rx_start, &resp);
 	if (ret < 0) {
 		LOG_ERR("Failed to parse response: %d", ret);
 		goto unlock;
@@ -351,14 +351,14 @@ unlock:
 	return ret;
 }
 
-int kineis_spi_send_only(const struct device *dev, uint8_t cmd,
+int argos_spi_send_only(const struct device *dev, uint8_t cmd,
 			 const uint8_t *tx_data, size_t tx_len)
 {
-	const struct kineis_spi_config *cfg = dev->config;
-	struct kineis_spi_data *data = dev->data;
+	const struct argos_spi_config *cfg = dev->config;
+	struct argos_spi_data *data = dev->data;
 	int ret;
 
-	if (tx_len > KINEIS_SPI_MAX_PAYLOAD) {
+	if (tx_len > ARGOS_SPI_MAX_PAYLOAD) {
 		return -EINVAL;
 	}
 
@@ -390,19 +390,19 @@ int kineis_spi_send_only(const struct device *dev, uint8_t cmd,
 	return ret;
 }
 
-int kineis_spi_ping(const struct device *dev)
+int argos_spi_ping(const struct device *dev)
 {
 	uint8_t status;
 	int ret;
 
 	LOG_DBG("Pinging device (app mode)");
 
-	ret = kineis_spi_transact(dev, KINEIS_CMD_PING, NULL, 0, NULL, NULL, &status);
+	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_PING, NULL, 0, NULL, NULL, &status);
 	if (ret < 0) {
 		return ret;
 	}
 
-	if (status != KINEIS_APP_RSP_ACK) {
+	if (status != ARGOS_SPI_RSP_OK) {
 		LOG_ERR("Ping failed: status 0x%02X", status);
 		return -EIO;
 	}
@@ -410,7 +410,7 @@ int kineis_spi_ping(const struct device *dev)
 	return 0;
 }
 
-int kineis_spi_get_version(const struct device *dev, char *version, size_t *version_len)
+int argos_spi_get_version(const struct device *dev, char *version, size_t *version_len)
 {
 	uint8_t status;
 	int ret;
@@ -419,13 +419,13 @@ int kineis_spi_get_version(const struct device *dev, char *version, size_t *vers
 		return -EINVAL;
 	}
 
-	ret = kineis_spi_transact(dev, KINEIS_CMD_GET_VERSION, NULL, 0,
+	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_READ_VERSION, NULL, 0,
 				  (uint8_t *)version, version_len, &status);
 	if (ret < 0) {
 		return ret;
 	}
 
-	if (status != KINEIS_APP_RSP_ACK) {
+	if (status != ARGOS_SPI_RSP_OK) {
 		LOG_ERR("Get version failed: status 0x%02X", status);
 		return -EIO;
 	}
@@ -438,9 +438,9 @@ int kineis_spi_get_version(const struct device *dev, char *version, size_t *vers
 	return 0;
 }
 
-int kineis_spi_reset(const struct device *dev)
+int argos_spi_reset(const struct device *dev)
 {
-	const struct kineis_spi_config *cfg = dev->config;
+	const struct argos_spi_config *cfg = dev->config;
 	int ret;
 
 	if (cfg->reset_gpio.port == NULL) {
@@ -474,10 +474,10 @@ int kineis_spi_reset(const struct device *dev)
 	return 0;
 }
 
-int kineis_spi_diagnostic(const struct device *dev)
+int argos_spi_diagnostic(const struct device *dev)
 {
-	const struct kineis_spi_config *cfg = dev->config;
-	struct kineis_spi_data *data = dev->data;
+	const struct argos_spi_config *cfg = dev->config;
+	struct argos_spi_data *data = dev->data;
 	int ret;
 	uint8_t tx_buf[32];
 	uint8_t rx_buf[32];
@@ -510,6 +510,30 @@ int kineis_spi_diagnostic(const struct device *dev)
 		LOG_INF("Reset GPIO: not configured");
 	}
 
+	/* Check CS GPIO directly */
+	LOG_INF("");
+	LOG_INF("CS GPIO status:");
+	if (cfg->spi.config.cs.gpio.port != NULL) {
+		const struct gpio_dt_spec *cs_gpio = &cfg->spi.config.cs.gpio;
+		LOG_INF("  Port: %s, Pin: %d, Flags: 0x%x",
+			cs_gpio->port->name, cs_gpio->pin, cs_gpio->dt_flags);
+		if (gpio_is_ready_dt(cs_gpio)) {
+			LOG_INF("  Status: GPIO READY");
+			/* Try to manually toggle CS for testing */
+			LOG_INF("  Attempting manual CS toggle test...");
+			/* Note: The SPI driver manages CS, we can't easily toggle it manually
+			 * but we can at least verify the GPIO port is accessible */
+			int pin_val = gpio_pin_get_raw(cs_gpio->port, cs_gpio->pin);
+			LOG_INF("  Current CS pin state (raw): %d", pin_val);
+		} else {
+			LOG_ERR("  Status: GPIO NOT READY - P0.10 may still be in NFC mode!");
+			LOG_ERR("  Make sure UICR is properly flashed with nfct-pins-as-gpios");
+			LOG_ERR("  Try: 'nrfjprog --eraseall' then re-flash the firmware");
+		}
+	} else {
+		LOG_ERR("  CS GPIO: NOT CONFIGURED - check cs-gpios in devicetree");
+	}
+
 	k_mutex_lock(&data->lock, K_FOREVER);
 
 	/* ===== TEST 1: Full-duplex transceive ===== */
@@ -518,11 +542,11 @@ int kineis_spi_diagnostic(const struct device *dev)
 	LOG_INF("Send PING command and read simultaneously");
 
 	/* Build ping frame */
-	tx_buf[0] = KINEIS_SPI_MAGIC_REQUEST;  /* 0xAA */
+	tx_buf[0] = ARGOS_SPI_MAGIC_REQUEST;  /* 0xAA */
 	tx_buf[1] = 0x00;                       /* Sequence */
-	tx_buf[2] = KINEIS_CMD_PING;           /* 0x01 */
+	tx_buf[2] = ARGOS_SPI_CMD_PING;           /* 0x01 */
 	tx_buf[3] = 0x00;                       /* Length */
-	tx_buf[4] = kineis_crc8_ccitt(tx_buf, 4);
+	tx_buf[4] = argos_spi_crc8_ccitt(tx_buf, 4);
 
 	LOG_INF("TX: AA 00 01 00 %02X (PING)", tx_buf[4]);
 
@@ -588,7 +612,7 @@ int kineis_spi_diagnostic(const struct device *dev)
 
 		/* Check for magic anywhere in buffer */
 		for (int i = 0; i < 16; i++) {
-			if (rx_buf[i] == KINEIS_SPI_MAGIC_RESPONSE) {
+			if (rx_buf[i] == ARGOS_SPI_MAGIC_RESPONSE) {
 				LOG_INF("  SUCCESS! Magic 0x55 at byte %d, status=0x%02X",
 					i, rx_buf[i + 2]);
 				k_mutex_unlock(&data->lock);
@@ -620,7 +644,7 @@ int kineis_spi_diagnostic(const struct device *dev)
 
 		/* Look for magic anywhere in response */
 		for (int i = 0; i < 21; i++) {
-			if (rx_buf[i] == KINEIS_SPI_MAGIC_RESPONSE) {
+			if (rx_buf[i] == ARGOS_SPI_MAGIC_RESPONSE) {
 				LOG_INF("  Magic 0x55 found at byte %d!", i);
 				LOG_INF("  Response starts at offset %d", i);
 				k_mutex_unlock(&data->lock);
@@ -683,22 +707,22 @@ int kineis_spi_diagnostic(const struct device *dev)
 }
 
 /* Device tree instantiation macros */
-#define DT_DRV_COMPAT kineis_spi
+#define DT_DRV_COMPAT arribada_argos_smd_spi
 
 /* Default SPI frequency if not specified in devicetree */
-#define KINEIS_SPI_DEFAULT_FREQ  1000000
+#define ARGOS_SPI_DEFAULT_FREQ  1000000
 
 /* Get SPI max frequency - use property if exists, otherwise default */
-#define KINEIS_SPI_FREQ(inst) \
-	DT_PROP_OR(DT_DRV_INST(inst), spi_max_frequency, KINEIS_SPI_DEFAULT_FREQ)
+#define ARGOS_SPI_FREQ(inst) \
+	DT_PROP_OR(DT_DRV_INST(inst), spi_max_frequency, ARGOS_SPI_DEFAULT_FREQ)
 
-#define KINEIS_SPI_INIT(inst)                                                   \
-	static struct kineis_spi_data kineis_spi_data_##inst;                   \
-	static const struct kineis_spi_config kineis_spi_config_##inst = {      \
+#define ARGOS_SPI_INIT(inst)                                                    \
+	static struct argos_spi_data argos_spi_data_##inst;                     \
+	static const struct argos_spi_config argos_spi_config_##inst = {        \
 		.spi = {                                                        \
 			.bus = DEVICE_DT_GET(DT_INST_BUS(inst)),                \
 			.config = {                                             \
-				.frequency = KINEIS_SPI_FREQ(inst),             \
+				.frequency = ARGOS_SPI_FREQ(inst),              \
 				.operation = SPI_WORD_SET(8) | SPI_TRANSFER_MSB \
 					   | SPI_OP_MODE_MASTER,                \
 				.slave = DT_INST_REG_ADDR(inst),                \
@@ -712,10 +736,10 @@ int kineis_spi_diagnostic(const struct device *dev)
 		.irq_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, irq_gpios, {0}),     \
 		.reset_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, reset_gpios, {0}), \
 	};                                                                      \
-	DEVICE_DT_INST_DEFINE(inst, kineis_spi_init, NULL,                      \
-			      &kineis_spi_data_##inst,                          \
-			      &kineis_spi_config_##inst,                        \
-			      POST_KERNEL, CONFIG_KINEIS_SPI_INIT_PRIORITY,     \
+	DEVICE_DT_INST_DEFINE(inst, argos_spi_init, NULL,                       \
+			      &argos_spi_data_##inst,                           \
+			      &argos_spi_config_##inst,                         \
+			      POST_KERNEL, CONFIG_ARGOS_SMD_SPI_INIT_PRIORITY,  \
 			      NULL);
 
-DT_INST_FOREACH_STATUS_OKAY(KINEIS_SPI_INIT)
+DT_INST_FOREACH_STATUS_OKAY(ARGOS_SPI_INIT)

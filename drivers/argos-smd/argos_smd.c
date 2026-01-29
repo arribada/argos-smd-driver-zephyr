@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#define DT_DRV_COMPAT arribada_argossmd
+#define DT_DRV_COMPAT arribada_argos_smd_uart
 #define MODULE        argos_smd
 
 #include <stdio.h>

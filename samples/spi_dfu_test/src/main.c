@@ -2,7 +2,7 @@
  * Copyright (c) 2025 Arribada Initiative
  * SPDX-License-Identifier: Apache-2.0
  *
- * Kineis SPI DFU Test Application
+ * Argos SMD SPI DFU Test Application
  *
  * This sample demonstrates firmware update over SPI using Protocol A+.
  */
@@ -12,19 +12,19 @@
 #include <zephyr/logging/log.h>
 #include <errno.h>
 
-#include <argos-smd/kineis_spi.h>
-#include <argos-smd/kineis_dfu_spi.h>
+#include <argos-smd/argos_smd_spi.h>
+#include <argos-smd/argos_smd_dfu_spi.h>
 
 LOG_MODULE_REGISTER(spi_dfu_test, LOG_LEVEL_INF);
 
-/* Get Kineis SPI device from devicetree */
-#define KINEIS_SPI_NODE DT_NODELABEL(kineis)
+/* Get Argos SMD SPI device from devicetree */
+#define ARGOS_SMD_SPI_NODE DT_NODELABEL(argos_smd)
 
-#if !DT_NODE_EXISTS(KINEIS_SPI_NODE)
-#error "Kineis SPI device not found in devicetree. Check your overlay."
+#if !DT_NODE_EXISTS(ARGOS_SMD_SPI_NODE)
+#error "Argos SMD SPI device not found in devicetree. Check your overlay."
 #endif
 
-static const struct device *kineis_dev = DEVICE_DT_GET(KINEIS_SPI_NODE);
+static const struct device *argos_dev = DEVICE_DT_GET(ARGOS_SMD_SPI_NODE);
 
 /* External firmware image (if provided via CMake) */
 #ifdef USE_EXTERNAL_FIRMWARE
@@ -45,7 +45,7 @@ static const uint8_t test_firmware[] = {
 #endif
 
 /* DFU chunk size for testing */
-#define TEST_CHUNK_SIZE  KINEIS_DFU_CHUNK_SIZE
+#define TEST_CHUNK_SIZE  ARGOS_DFU_CHUNK_SIZE
 
 /* Progress callback */
 static void dfu_progress_callback(uint32_t current, uint32_t total, void *user_data)
@@ -64,7 +64,7 @@ static int test_hardware_reset(const struct device *dev)
 {
 	LOG_INF("--- Test: HARDWARE RESET ---");
 
-	int ret = kineis_spi_reset(dev);
+	int ret = argos_spi_reset(dev);
 	if (ret == 0) {
 		LOG_INF("RESULT: Hardware reset completed");
 	} else if (ret == -ENOTSUP) {
@@ -82,7 +82,7 @@ static int test_spi_diagnostic(const struct device *dev)
 {
 	LOG_INF("--- Test: SPI DIAGNOSTIC ---");
 
-	int ret = kineis_spi_diagnostic(dev);
+	int ret = argos_spi_diagnostic(dev);
 	if (ret == 0) {
 		LOG_INF("RESULT: Diagnostic completed (check output above)");
 	} else {
@@ -97,7 +97,7 @@ static int test_spi_ping(const struct device *dev)
 {
 	LOG_INF("--- Test: SPI PING (app mode) ---");
 
-	int ret = kineis_spi_ping(dev);
+	int ret = argos_spi_ping(dev);
 	if (ret == 0) {
 		LOG_INF("RESULT: PASS - Device responding to PING");
 	} else {
@@ -115,7 +115,7 @@ static int test_spi_get_version(const struct device *dev)
 
 	LOG_INF("--- Test: GET VERSION ---");
 
-	int ret = kineis_spi_get_version(dev, version, &version_len);
+	int ret = argos_spi_get_version(dev, version, &version_len);
 	if (ret == 0) {
 		LOG_INF("RESULT: PASS - Version: %s", version);
 	} else {
@@ -130,7 +130,7 @@ static int test_dfu_enter(const struct device *dev)
 {
 	LOG_INF("--- Test: DFU ENTER ---");
 
-	int ret = kineis_dfu_enter(dev);
+	int ret = argos_dfu_enter(dev);
 	if (ret == 0) {
 		LOG_INF("RESULT: PASS - DFU enter command sent");
 	} else {
@@ -145,7 +145,7 @@ static int test_dfu_ping(const struct device *dev)
 {
 	LOG_INF("--- Test: DFU PING (bootloader mode) ---");
 
-	int ret = kineis_dfu_ping(dev);
+	int ret = argos_dfu_ping(dev);
 	if (ret == 0) {
 		LOG_INF("RESULT: PASS - Bootloader responding");
 	} else {
@@ -158,11 +158,11 @@ static int test_dfu_ping(const struct device *dev)
 /* Test: Get bootloader info */
 static int test_dfu_get_info(const struct device *dev)
 {
-	struct kineis_bl_info info;
+	struct argos_bl_info info;
 
 	LOG_INF("--- Test: DFU GET INFO ---");
 
-	int ret = kineis_dfu_get_info(dev, &info);
+	int ret = argos_dfu_get_info(dev, &info);
 	if (ret == 0) {
 		LOG_INF("RESULT: PASS - Bootloader info retrieved");
 		LOG_INF("  Version: %u.%u.%u", info.version_major,
@@ -182,7 +182,7 @@ static int test_dfu_erase(const struct device *dev)
 {
 	LOG_INF("--- Test: DFU ERASE ---");
 
-	int ret = kineis_dfu_erase(dev);
+	int ret = argos_dfu_erase(dev);
 	if (ret == 0) {
 		LOG_INF("RESULT: PASS - Flash erased successfully");
 	} else {
@@ -196,7 +196,7 @@ static int test_dfu_erase(const struct device *dev)
 static int test_dfu_write_chunk(const struct device *dev)
 {
 	uint8_t test_data[64];
-	uint32_t addr = KINEIS_FLASH_APPLICATION;
+	uint32_t addr = ARGOS_FLASH_APPLICATION;
 
 	LOG_INF("--- Test: DFU WRITE CHUNK ---");
 
@@ -205,7 +205,7 @@ static int test_dfu_write_chunk(const struct device *dev)
 		test_data[i] = (uint8_t)i;
 	}
 
-	int ret = kineis_dfu_write_chunk(dev, addr, test_data, sizeof(test_data));
+	int ret = argos_dfu_write_chunk(dev, addr, test_data, sizeof(test_data));
 	if (ret == 0) {
 		LOG_INF("RESULT: PASS - Chunk written at 0x%08X", addr);
 	} else {
@@ -220,7 +220,7 @@ static int test_dfu_abort(const struct device *dev)
 {
 	LOG_INF("--- Test: DFU ABORT ---");
 
-	int ret = kineis_dfu_abort(dev);
+	int ret = argos_dfu_abort(dev);
 	if (ret == 0) {
 		LOG_INF("RESULT: PASS - DFU aborted");
 	} else {
@@ -235,7 +235,7 @@ static int test_dfu_jump(const struct device *dev)
 {
 	LOG_INF("--- Test: DFU JUMP ---");
 
-	int ret = kineis_dfu_jump(dev);
+	int ret = argos_dfu_jump(dev);
 	if (ret == 0) {
 		LOG_INF("RESULT: PASS - Jump command sent");
 	} else {
@@ -251,7 +251,7 @@ static int test_full_firmware_update(const struct device *dev)
 	LOG_INF("--- Test: FULL FIRMWARE UPDATE ---");
 	LOG_INF("Firmware size: %u bytes", TEST_FW_SIZE);
 
-	int ret = kineis_firmware_update(dev, TEST_FW_IMAGE, TEST_FW_SIZE,
+	int ret = argos_spi_firmware_update(dev, TEST_FW_IMAGE, TEST_FW_SIZE,
 					 dfu_progress_callback, NULL);
 	if (ret == 0) {
 		LOG_INF("RESULT: PASS - Firmware update successful");
@@ -267,7 +267,7 @@ int main(void)
 	int errors = 0;
 
 	LOG_INF("========================================");
-	LOG_INF("   Kineis SPI DFU Test Application");
+	LOG_INF("   Argos SMD SPI DFU Test Application");
 	LOG_INF("========================================");
 
 #ifdef USE_EXTERNAL_FIRMWARE
@@ -281,12 +281,12 @@ int main(void)
 	LOG_INF("");
 
 	/* Check device is ready */
-	if (!device_is_ready(kineis_dev)) {
-		LOG_ERR("Kineis SPI device not ready!");
+	if (!device_is_ready(argos_dev)) {
+		LOG_ERR("Argos SMD SPI device not ready!");
 		return -1;
 	}
 
-	LOG_INF("Kineis SPI device ready");
+	LOG_INF("Argos SMD SPI device ready");
 	LOG_INF("");
 
 	/* ===== PHASE 0: SPI DIAGNOSTIC ===== */
@@ -296,11 +296,11 @@ int main(void)
 	LOG_INF("");
 
 	/* Try hardware reset first */
-	test_hardware_reset(kineis_dev);
+	test_hardware_reset(argos_dev);
 	k_msleep(100);
 
 	/* Run SPI diagnostic */
-	test_spi_diagnostic(kineis_dev);
+	test_spi_diagnostic(argos_dev);
 	k_msleep(500);
 
 	LOG_INF("");
@@ -311,10 +311,10 @@ int main(void)
 	LOG_INF("======================================");
 	LOG_INF("");
 
-	errors += (test_spi_ping(kineis_dev) != 0) ? 1 : 0;
+	errors += (test_spi_ping(argos_dev) != 0) ? 1 : 0;
 	k_msleep(500);
 
-	errors += (test_spi_get_version(kineis_dev) != 0) ? 1 : 0;
+	errors += (test_spi_get_version(argos_dev) != 0) ? 1 : 0;
 	k_msleep(500);
 
 	LOG_INF("");
@@ -325,20 +325,20 @@ int main(void)
 	LOG_INF("======================================");
 	LOG_INF("");
 
-	errors += (test_dfu_enter(kineis_dev) != 0) ? 1 : 0;
+	errors += (test_dfu_enter(argos_dev) != 0) ? 1 : 0;
 	k_msleep(200);
 
 	/* Wait for bootloader to be ready */
 	LOG_INF("Waiting for bootloader...");
-	int ret = kineis_dfu_wait_ready(kineis_dev, K_SECONDS(5));
+	int ret = argos_dfu_wait_ready(argos_dev, K_SECONDS(5));
 	if (ret != 0) {
 		LOG_ERR("Bootloader not ready: %d", ret);
 		errors++;
 	} else {
-		errors += (test_dfu_ping(kineis_dev) != 0) ? 1 : 0;
+		errors += (test_dfu_ping(argos_dev) != 0) ? 1 : 0;
 		k_msleep(500);
 
-		errors += (test_dfu_get_info(kineis_dev) != 0) ? 1 : 0;
+		errors += (test_dfu_get_info(argos_dev) != 0) ? 1 : 0;
 		k_msleep(500);
 	}
 
@@ -351,21 +351,21 @@ int main(void)
 	LOG_INF("");
 
 	/* Make sure we're in bootloader mode */
-	kineis_dfu_wait_ready(kineis_dev, K_SECONDS(2));
+	argos_dfu_wait_ready(argos_dev, K_SECONDS(2));
 
-	errors += (test_dfu_erase(kineis_dev) != 0) ? 1 : 0;
+	errors += (test_dfu_erase(argos_dev) != 0) ? 1 : 0;
 	k_msleep(500);
 
-	errors += (test_dfu_write_chunk(kineis_dev) != 0) ? 1 : 0;
+	errors += (test_dfu_write_chunk(argos_dev) != 0) ? 1 : 0;
 	k_msleep(500);
 
-	errors += (test_dfu_abort(kineis_dev) != 0) ? 1 : 0;
+	errors += (test_dfu_abort(argos_dev) != 0) ? 1 : 0;
 	k_msleep(500);
 
 	LOG_INF("");
 
 	/* ===== PHASE 4: FULL OTA UPDATE (OPTIONAL) ===== */
-#ifdef CONFIG_KINEIS_SPI_DFU_TEST_FULL_UPDATE
+#ifdef CONFIG_ARGOS_SMD_DFU_TEST_FULL_UPDATE
 	LOG_INF("======================================");
 	LOG_INF("  PHASE 4: FULL OTA UPDATE TEST");
 	LOG_INF("======================================");
@@ -374,19 +374,19 @@ int main(void)
 	LOG_INF("");
 
 	/* Re-enter bootloader mode (abort may have exited) */
-	kineis_dfu_enter(kineis_dev);
+	argos_dfu_enter(argos_dev);
 	k_msleep(200);
-	kineis_dfu_wait_ready(kineis_dev, K_SECONDS(5));
+	argos_dfu_wait_ready(argos_dev, K_SECONDS(5));
 
-	errors += (test_full_firmware_update(kineis_dev) != 0) ? 1 : 0;
+	errors += (test_full_firmware_update(argos_dev) != 0) ? 1 : 0;
 #else
 	LOG_INF("======================================");
 	LOG_INF("  PHASE 4: FULL OTA UPDATE - SKIPPED");
 	LOG_INF("======================================");
-	LOG_INF("(Enable CONFIG_KINEIS_SPI_DFU_TEST_FULL_UPDATE to run)");
+	LOG_INF("(Enable CONFIG_ARGOS_SMD_DFU_TEST_FULL_UPDATE to run)");
 
 	/* Jump back to application */
-	test_dfu_jump(kineis_dev);
+	test_dfu_jump(argos_dev);
 #endif
 
 	LOG_INF("");

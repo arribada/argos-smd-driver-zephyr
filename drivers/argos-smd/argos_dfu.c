@@ -14,7 +14,7 @@
 #include <argos-smd/argos_dfu.h>
 #include <argos-smd/argos_smd.h>
 
-LOG_MODULE_REGISTER(argos_dfu, CONFIG_ARGOS_DFU_LOG_LEVEL);
+LOG_MODULE_REGISTER(argos_dfu, CONFIG_ARGOS_SMD_DFU_LOG_LEVEL);
 
 /* CRC32 calculation using standard polynomial (reflected form) */
 uint32_t argos_dfu_crc32(const uint8_t *data, size_t len)

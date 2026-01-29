@@ -1,14 +1,15 @@
 description: |
-  Kineis (Argos) module SPI interface.
+  Argos SMD module SPI interface.
 
-  Provides SPI communication with Kineis modules using Protocol A+ framing.
-  Supports application commands and DFU (Device Firmware Update) operations.
+  Provides SPI communication with Argos SMD modules using Protocol A+ framing.
+  Supports application commands (0x00-0x2A) and DFU (Device Firmware Update)
+  bootloader commands (0x30-0x3F).
 
   Protocol A+ frame format:
   Request:  | MAGIC (0xAA) | SEQ | CMD | LEN | DATA[0..LEN-1] | CRC8 |
   Response: | MAGIC (0x55) | SEQ | STATUS | LEN | DATA[0..LEN-1] | CRC8 |
 
-compatible: "kineis,spi"
+compatible: "arribada,argos-smd-spi"
 
 include: spi-device.yaml
 
@@ -36,4 +37,4 @@ properties:
     type: phandle-array
     description: |
       Optional hardware reset GPIO pin. When configured, can be used to
-      perform a hardware reset of the Kineis module.
+      perform a hardware reset of the Argos SMD module.

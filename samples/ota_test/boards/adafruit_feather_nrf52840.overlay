@@ -66,9 +66,9 @@
 	pinctrl-1 = <&uart1_sleep>;
 	pinctrl-names = "default", "sleep";
 
-	argossmd: argossmd {
-		compatible = "arribada,argossmd";
-		label = "ARGOSSMD";
+	argos_smd: argos-smd {
+		compatible = "arribada,argos-smd-uart";
+		label = "ARGOS_SMD";
 
 		/*
 		 * Optional: Wakeup GPIO for low power mode

@@ -10,13 +10,13 @@
 #include <string.h>
 #include <errno.h>
 
-#include <argos-smd/kineis_spi.h>
-#include <argos-smd/kineis_dfu_spi.h>
+#include <argos-smd/argos_smd_spi.h>
+#include <argos-smd/argos_smd_dfu_spi.h>
 
-LOG_MODULE_REGISTER(kineis_dfu_spi, CONFIG_KINEIS_DFU_LOG_LEVEL);
+LOG_MODULE_REGISTER(argos_smd_dfu_spi, CONFIG_ARGOS_SMD_DFU_LOG_LEVEL);
 
 /* CRC32 calculation using standard polynomial (same as UART DFU) */
-uint32_t kineis_dfu_crc32(const uint8_t *data, size_t len)
+uint32_t argos_dfu_crc32(const uint8_t *data, size_t len)
 {
 	uint32_t crc = 0xFFFFFFFF;
 
@@ -30,7 +30,7 @@ uint32_t kineis_dfu_crc32(const uint8_t *data, size_t len)
 	return ~crc;
 }
 
-int kineis_dfu_enter(const struct device *dev)
+int argos_dfu_enter(const struct device *dev)
 {
 	uint8_t status;
 	int ret;
@@ -38,13 +38,13 @@ int kineis_dfu_enter(const struct device *dev)
 	LOG_INF("Entering DFU bootloader mode...");
 
 	/* Send CMD_DFU_ENTER (0x3F) - device will ACK then reset */
-	ret = kineis_spi_transact(dev, KINEIS_CMD_DFU_ENTER, NULL, 0, NULL, NULL, &status);
+	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_DFU_ENTER, NULL, 0, NULL, NULL, &status);
 	if (ret < 0) {
 		LOG_ERR("Failed to send DFU enter command: %d", ret);
 		return ret;
 	}
 
-	if (status != KINEIS_APP_RSP_ACK) {
+	if (status != ARGOS_SPI_RSP_OK) {
 		LOG_ERR("DFU enter rejected: status 0x%02X", status);
 		return -EIO;
 	}
@@ -52,12 +52,12 @@ int kineis_dfu_enter(const struct device *dev)
 	LOG_INF("DFU enter acknowledged, device will reset to bootloader");
 
 	/* Wait for device to reset */
-	k_msleep(KINEIS_DFU_RESET_WAIT_MS);
+	k_msleep(ARGOS_DFU_RESET_WAIT_MS);
 
 	return 0;
 }
 
-int kineis_dfu_ping(const struct device *dev)
+int argos_dfu_ping(const struct device *dev)
 {
 	uint8_t status;
 	uint8_t rx_data[16];
@@ -66,13 +66,13 @@ int kineis_dfu_ping(const struct device *dev)
 
 	LOG_DBG("Pinging DFU bootloader...");
 
-	ret = kineis_spi_transact(dev, KINEIS_DFU_CMD_PING, NULL, 0,
+	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_PING, NULL, 0,
 				  rx_data, &rx_len, &status);
 	if (ret < 0) {
 		return ret;
 	}
 
-	if (status != KINEIS_DFU_RSP_OK) {
+	if (status != ARGOS_DFU_RSP_OK) {
 		LOG_ERR("DFU ping failed: status 0x%02X", status);
 		return -EIO;
 	}
@@ -84,7 +84,7 @@ int kineis_dfu_ping(const struct device *dev)
 	return 0;
 }
 
-int kineis_dfu_wait_ready(const struct device *dev, k_timeout_t timeout)
+int argos_dfu_wait_ready(const struct device *dev, k_timeout_t timeout)
 {
 	LOG_INF("Waiting for DFU bootloader to be ready...");
 
@@ -92,7 +92,7 @@ int kineis_dfu_wait_ready(const struct device *dev, k_timeout_t timeout)
 	int64_t timeout_ms = k_ticks_to_ms_floor64(timeout.ticks);
 
 	while ((k_uptime_get() - start) < timeout_ms) {
-		int ret = kineis_dfu_ping(dev);
+		int ret = argos_dfu_ping(dev);
 		if (ret == 0) {
 			LOG_INF("DFU bootloader is ready!");
 			return 0;
@@ -105,7 +105,7 @@ int kineis_dfu_wait_ready(const struct device *dev, k_timeout_t timeout)
 	return -ETIMEDOUT;
 }
 
-int kineis_dfu_get_info(const struct device *dev, struct kineis_bl_info *info)
+int argos_dfu_get_info(const struct device *dev, struct argos_bl_info *info)
 {
 	uint8_t status;
 	uint8_t rx_data[32];
@@ -118,13 +118,13 @@ int kineis_dfu_get_info(const struct device *dev, struct kineis_bl_info *info)
 
 	LOG_DBG("Getting bootloader info...");
 
-	ret = kineis_spi_transact(dev, KINEIS_DFU_CMD_GET_INFO, NULL, 0,
+	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_GET_INFO, NULL, 0,
 				  rx_data, &rx_len, &status);
 	if (ret < 0) {
 		return ret;
 	}
 
-	if (status != KINEIS_DFU_RSP_OK) {
+	if (status != ARGOS_DFU_RSP_OK) {
 		LOG_ERR("Get info failed: status 0x%02X", status);
 		return -EIO;
 	}
@@ -152,7 +152,7 @@ int kineis_dfu_get_info(const struct device *dev, struct kineis_bl_info *info)
 	return 0;
 }
 
-int kineis_dfu_erase(const struct device *dev)
+int argos_dfu_erase(const struct device *dev)
 {
 	uint8_t status;
 	int ret;
@@ -160,14 +160,14 @@ int kineis_dfu_erase(const struct device *dev)
 	LOG_INF("Erasing application flash (this may take a few seconds)...");
 
 	/* Erase can take 2-3 seconds - use longer timeout */
-	ret = kineis_spi_transact(dev, KINEIS_DFU_CMD_ERASE, NULL, 0,
+	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_ERASE, NULL, 0,
 				  NULL, NULL, &status);
 	if (ret < 0) {
 		LOG_ERR("Erase command failed: %d", ret);
 		return ret;
 	}
 
-	if (status != KINEIS_DFU_RSP_OK) {
+	if (status != ARGOS_DFU_RSP_OK) {
 		LOG_ERR("Flash erase failed: status 0x%02X", status);
 		return -EIO;
 	}
@@ -176,14 +176,14 @@ int kineis_dfu_erase(const struct device *dev)
 	return 0;
 }
 
-int kineis_dfu_write_chunk(const struct device *dev, uint32_t addr,
+int argos_dfu_write_chunk(const struct device *dev, uint32_t addr,
 			   const uint8_t *data, size_t len)
 {
 	uint8_t status;
 	uint8_t req_data[6];
 	int ret;
 
-	if (!data || len == 0 || len > KINEIS_DFU_CHUNK_SIZE) {
+	if (!data || len == 0 || len > ARGOS_DFU_CHUNK_SIZE) {
 		return -EINVAL;
 	}
 
@@ -197,33 +197,33 @@ int kineis_dfu_write_chunk(const struct device *dev, uint32_t addr,
 	req_data[4] = (len >> 8) & 0xFF;
 	req_data[5] = len & 0xFF;
 
-	ret = kineis_spi_transact(dev, KINEIS_DFU_CMD_WRITE_REQ, req_data, 6,
+	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_WRITE_REQ, req_data, 6,
 				  NULL, NULL, &status);
 	if (ret < 0) {
 		LOG_ERR("Write request failed: %d", ret);
 		return ret;
 	}
 
-	if (status != KINEIS_DFU_RSP_OK) {
+	if (status != ARGOS_DFU_RSP_OK) {
 		LOG_ERR("Write request rejected: status 0x%02X", status);
 		return -EIO;
 	}
 
 	/* Step 2: Send WRITE_DATA with actual data */
-	ret = kineis_spi_transact(dev, KINEIS_DFU_CMD_WRITE_DATA, data, len,
+	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_WRITE_DATA, data, len,
 				  NULL, NULL, &status);
 	if (ret < 0) {
 		LOG_ERR("Write data failed: %d", ret);
 		return ret;
 	}
 
-	if (status != KINEIS_DFU_RSP_OK) {
+	if (status != ARGOS_DFU_RSP_OK) {
 		LOG_ERR("Write data rejected: status 0x%02X", status);
-		if (status == KINEIS_DFU_RSP_FLASH_ERROR) {
+		if (status == ARGOS_DFU_RSP_FLASH_ERROR) {
 			return -EIO;
-		} else if (status == KINEIS_DFU_RSP_ADDR_ERROR) {
+		} else if (status == ARGOS_DFU_RSP_ADDR_ERROR) {
 			return -EFAULT;
-		} else if (status == KINEIS_DFU_RSP_SIZE_ERROR) {
+		} else if (status == ARGOS_DFU_RSP_SIZE_ERROR) {
 			return -EINVAL;
 		}
 		return -EIO;
@@ -232,14 +232,14 @@ int kineis_dfu_write_chunk(const struct device *dev, uint32_t addr,
 	return 0;
 }
 
-int kineis_dfu_read(const struct device *dev, uint32_t addr, uint8_t *data, size_t len)
+int argos_dfu_read(const struct device *dev, uint32_t addr, uint8_t *data, size_t len)
 {
 	uint8_t status;
 	uint8_t req_data[6];
 	size_t rx_len;
 	int ret;
 
-	if (!data || len == 0 || len > KINEIS_SPI_MAX_PAYLOAD) {
+	if (!data || len == 0 || len > ARGOS_SPI_MAX_PAYLOAD) {
 		return -EINVAL;
 	}
 
@@ -253,26 +253,26 @@ int kineis_dfu_read(const struct device *dev, uint32_t addr, uint8_t *data, size
 	req_data[4] = (len >> 8) & 0xFF;
 	req_data[5] = len & 0xFF;
 
-	ret = kineis_spi_transact(dev, KINEIS_DFU_CMD_READ_REQ, req_data, 6,
+	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_READ_REQ, req_data, 6,
 				  NULL, NULL, &status);
 	if (ret < 0) {
 		return ret;
 	}
 
-	if (status != KINEIS_DFU_RSP_OK) {
+	if (status != ARGOS_DFU_RSP_OK) {
 		LOG_ERR("Read request rejected: status 0x%02X", status);
 		return -EIO;
 	}
 
 	/* Step 2: Send READ_DATA to get the data */
 	rx_len = len;
-	ret = kineis_spi_transact(dev, KINEIS_DFU_CMD_READ_DATA, NULL, 0,
+	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_READ_DATA, NULL, 0,
 				  data, &rx_len, &status);
 	if (ret < 0) {
 		return ret;
 	}
 
-	if (status != KINEIS_DFU_RSP_OK) {
+	if (status != ARGOS_DFU_RSP_OK) {
 		LOG_ERR("Read data failed: status 0x%02X", status);
 		return -EIO;
 	}
@@ -280,7 +280,7 @@ int kineis_dfu_read(const struct device *dev, uint32_t addr, uint8_t *data, size
 	return 0;
 }
 
-int kineis_dfu_verify(const struct device *dev, uint32_t crc32)
+int argos_dfu_verify(const struct device *dev, uint32_t crc32)
 {
 	uint8_t status;
 	uint8_t crc_data[4];
@@ -294,18 +294,18 @@ int kineis_dfu_verify(const struct device *dev, uint32_t crc32)
 	crc_data[2] = (crc32 >> 8) & 0xFF;
 	crc_data[3] = crc32 & 0xFF;
 
-	ret = kineis_spi_transact(dev, KINEIS_DFU_CMD_VERIFY, crc_data, 4,
+	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_VERIFY, crc_data, 4,
 				  NULL, NULL, &status);
 	if (ret < 0) {
 		LOG_ERR("Verify command failed: %d", ret);
 		return ret;
 	}
 
-	if (status == KINEIS_DFU_RSP_OK) {
+	if (status == ARGOS_DFU_RSP_OK) {
 		LOG_INF("CRC verification passed!");
 		return 0;
-	} else if (status == KINEIS_DFU_RSP_CRC_ERROR ||
-		   status == KINEIS_DFU_RSP_VERIFY_ERROR) {
+	} else if (status == ARGOS_DFU_RSP_CRC_ERROR ||
+		   status == ARGOS_DFU_RSP_VERIFY_ERROR) {
 		LOG_ERR("CRC verification failed - mismatch");
 		return -EILSEQ;
 	} else {
@@ -314,45 +314,45 @@ int kineis_dfu_verify(const struct device *dev, uint32_t crc32)
 	}
 }
 
-int kineis_dfu_reset(const struct device *dev)
+int argos_dfu_reset(const struct device *dev)
 {
 	int ret;
 
 	LOG_INF("Resetting device...");
 
 	/* Reset command - no response expected */
-	ret = kineis_spi_send_only(dev, KINEIS_DFU_CMD_RESET, NULL, 0);
+	ret = argos_spi_send_only(dev, ARGOS_SPI_DFU_CMD_RESET, NULL, 0);
 	if (ret < 0) {
 		LOG_ERR("Reset command failed: %d", ret);
 		return ret;
 	}
 
 	/* Wait for reset to complete */
-	k_msleep(KINEIS_DFU_RESET_WAIT_MS);
+	k_msleep(ARGOS_DFU_RESET_WAIT_MS);
 
 	return 0;
 }
 
-int kineis_dfu_jump(const struct device *dev)
+int argos_dfu_jump(const struct device *dev)
 {
 	int ret;
 
 	LOG_INF("Jumping to application...");
 
 	/* Jump command - device will reset to application */
-	ret = kineis_spi_send_only(dev, KINEIS_DFU_CMD_JUMP, NULL, 0);
+	ret = argos_spi_send_only(dev, ARGOS_SPI_DFU_CMD_JUMP, NULL, 0);
 	if (ret < 0) {
 		LOG_ERR("Jump command failed: %d", ret);
 		return ret;
 	}
 
 	/* Wait for jump/reset to complete */
-	k_msleep(KINEIS_DFU_RESET_WAIT_MS * 2);
+	k_msleep(ARGOS_DFU_RESET_WAIT_MS * 2);
 
 	return 0;
 }
 
-int kineis_dfu_get_status(const struct device *dev, struct kineis_dfu_status *status_out)
+int argos_dfu_get_status_spi(const struct device *dev, struct argos_dfu_status *status_out)
 {
 	uint8_t status;
 	uint8_t rx_data[16];
@@ -363,13 +363,13 @@ int kineis_dfu_get_status(const struct device *dev, struct kineis_dfu_status *st
 		return -EINVAL;
 	}
 
-	ret = kineis_spi_transact(dev, KINEIS_DFU_CMD_GET_STATUS, NULL, 0,
+	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_GET_STATUS, NULL, 0,
 				  rx_data, &rx_len, &status);
 	if (ret < 0) {
 		return ret;
 	}
 
-	if (status != KINEIS_DFU_RSP_OK) {
+	if (status != ARGOS_DFU_RSP_OK) {
 		LOG_ERR("Get status failed: status 0x%02X", status);
 		return -EIO;
 	}
@@ -387,21 +387,21 @@ int kineis_dfu_get_status(const struct device *dev, struct kineis_dfu_status *st
 	return 0;
 }
 
-int kineis_dfu_abort(const struct device *dev)
+int argos_dfu_abort(const struct device *dev)
 {
 	uint8_t status;
 	int ret;
 
 	LOG_WRN("Aborting DFU operation...");
 
-	ret = kineis_spi_transact(dev, KINEIS_DFU_CMD_ABORT, NULL, 0,
+	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_ABORT, NULL, 0,
 				  NULL, NULL, &status);
 	if (ret < 0) {
 		LOG_ERR("Abort command failed: %d", ret);
 		return ret;
 	}
 
-	if (status != KINEIS_DFU_RSP_OK) {
+	if (status != ARGOS_DFU_RSP_OK) {
 		LOG_ERR("Abort failed: status 0x%02X", status);
 		return -EIO;
 	}
@@ -410,7 +410,7 @@ int kineis_dfu_abort(const struct device *dev)
 	return 0;
 }
 
-int kineis_dfu_set_header(const struct device *dev, const uint8_t *header)
+int argos_dfu_set_header(const struct device *dev, const uint8_t *header)
 {
 	uint8_t status;
 	int ret;
@@ -419,17 +419,17 @@ int kineis_dfu_set_header(const struct device *dev, const uint8_t *header)
 		return -EINVAL;
 	}
 
-	LOG_DBG("Setting application header (%d bytes)", KINEIS_DFU_HEADER_SIZE);
+	LOG_DBG("Setting application header (%d bytes)", ARGOS_DFU_HEADER_SIZE);
 
-	ret = kineis_spi_transact(dev, KINEIS_DFU_CMD_SET_HEADER,
-				  header, KINEIS_DFU_HEADER_SIZE,
+	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_SET_HEADER,
+				  header, ARGOS_DFU_HEADER_SIZE,
 				  NULL, NULL, &status);
 	if (ret < 0) {
 		LOG_ERR("Set header failed: %d", ret);
 		return ret;
 	}
 
-	if (status != KINEIS_DFU_RSP_OK) {
+	if (status != ARGOS_DFU_RSP_OK) {
 		LOG_ERR("Set header rejected: status 0x%02X", status);
 		return -EIO;
 	}
@@ -437,9 +437,9 @@ int kineis_dfu_set_header(const struct device *dev, const uint8_t *header)
 	return 0;
 }
 
-int kineis_firmware_update(const struct device *dev,
-			   const uint8_t *firmware, size_t size,
-			   kineis_dfu_progress_cb_t progress_cb, void *user_data)
+int argos_spi_firmware_update(const struct device *dev,
+			      const uint8_t *firmware, size_t size,
+			      argos_dfu_progress_cb_t progress_cb, void *user_data)
 {
 	int ret;
 	uint32_t crc32;
@@ -454,19 +454,19 @@ int kineis_firmware_update(const struct device *dev,
 		return -EINVAL;
 	}
 
-	if (size > KINEIS_MAX_APP_SIZE) {
-		LOG_ERR("Firmware too large: %zu bytes (max %u)", size, KINEIS_MAX_APP_SIZE);
+	if (size > ARGOS_MAX_APP_SIZE) {
+		LOG_ERR("Firmware too large: %zu bytes (max %u)", size, ARGOS_MAX_APP_SIZE);
 		return -EINVAL;
 	}
 
 	/* Step 1: Calculate CRC32 */
 	LOG_INF("Step 1/7: Calculating firmware CRC32...");
-	crc32 = kineis_dfu_crc32(firmware, size);
+	crc32 = argos_dfu_crc32(firmware, size);
 	LOG_INF("Firmware CRC32: 0x%08X", crc32);
 
 	/* Step 2: Enter bootloader mode */
 	LOG_INF("Step 2/7: Entering bootloader mode...");
-	ret = kineis_dfu_enter(dev);
+	ret = argos_dfu_enter(dev);
 	if (ret < 0) {
 		LOG_ERR("Failed to enter bootloader: %d", ret);
 		return ret;
@@ -474,15 +474,15 @@ int kineis_firmware_update(const struct device *dev,
 
 	/* Step 3: Wait for bootloader to be ready */
 	LOG_INF("Step 3/7: Waiting for bootloader...");
-	ret = kineis_dfu_wait_ready(dev, K_SECONDS(5));
+	ret = argos_dfu_wait_ready(dev, K_SECONDS(5));
 	if (ret < 0) {
 		LOG_ERR("Bootloader not ready: %d", ret);
 		return ret;
 	}
 
 	/* Step 4: Get bootloader info (optional but useful) */
-	struct kineis_bl_info bl_info;
-	ret = kineis_dfu_get_info(dev, &bl_info);
+	struct argos_bl_info bl_info;
+	ret = argos_dfu_get_info(dev, &bl_info);
 	if (ret < 0) {
 		LOG_WRN("Could not get bootloader info: %d", ret);
 		/* Continue anyway */
@@ -490,27 +490,27 @@ int kineis_firmware_update(const struct device *dev,
 
 	/* Step 5: Erase flash */
 	LOG_INF("Step 4/7: Erasing flash...");
-	ret = kineis_dfu_erase(dev);
+	ret = argos_dfu_erase(dev);
 	if (ret < 0) {
 		LOG_ERR("Flash erase failed: %d", ret);
-		kineis_dfu_abort(dev);
+		argos_dfu_abort(dev);
 		return ret;
 	}
 
 	/* Step 6: Write firmware in chunks */
 	LOG_INF("Step 5/7: Writing firmware (%zu bytes)...", size);
 
-	uint32_t addr = KINEIS_FLASH_APPLICATION;
+	uint32_t addr = ARGOS_FLASH_APPLICATION;
 	size_t offset = 0;
 	uint32_t last_progress = 0;
 
 	while (offset < size) {
-		size_t chunk_len = MIN(KINEIS_DFU_CHUNK_SIZE, size - offset);
+		size_t chunk_len = MIN(ARGOS_DFU_CHUNK_SIZE, size - offset);
 
-		ret = kineis_dfu_write_chunk(dev, addr, &firmware[offset], chunk_len);
+		ret = argos_dfu_write_chunk(dev, addr, &firmware[offset], chunk_len);
 		if (ret < 0) {
 			LOG_ERR("Write failed at offset %zu: %d", offset, ret);
-			kineis_dfu_abort(dev);
+			argos_dfu_abort(dev);
 			return ret;
 		}
 
@@ -534,16 +534,16 @@ int kineis_firmware_update(const struct device *dev,
 
 	/* Step 7: Verify CRC */
 	LOG_INF("Step 6/7: Verifying CRC...");
-	ret = kineis_dfu_verify(dev, crc32);
+	ret = argos_dfu_verify(dev, crc32);
 	if (ret < 0) {
 		LOG_ERR("CRC verification failed: %d", ret);
-		kineis_dfu_abort(dev);
+		argos_dfu_abort(dev);
 		return ret;
 	}
 
 	/* Step 8: Jump to application */
 	LOG_INF("Step 7/7: Starting application...");
-	ret = kineis_dfu_jump(dev);
+	ret = argos_dfu_jump(dev);
 	if (ret < 0) {
 		LOG_ERR("Jump to application failed: %d", ret);
 		return ret;
@@ -551,7 +551,7 @@ int kineis_firmware_update(const struct device *dev,
 
 	/* Verify device is responding in app mode */
 	k_msleep(500);
-	ret = kineis_spi_ping(dev);
+	ret = argos_spi_ping(dev);
 	if (ret < 0) {
 		LOG_WRN("Device not responding after update (may need manual reset)");
 	}
