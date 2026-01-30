@@ -64,10 +64,11 @@ int argos_dfu_ping(const struct device *dev)
 	size_t rx_len = sizeof(rx_data);
 	int ret;
 
-	LOG_DBG("Pinging DFU bootloader...");
+	LOG_DBG("Pinging DFU bootloader (RAW mode)...");
 
-	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_PING, NULL, 0,
-				  rx_data, &rx_len, &status);
+	/* Use RAW transaction - bootloader expects no Protocol A+ framing */
+	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_PING, NULL, 0,
+				     rx_data, &rx_len, &status);
 	if (ret < 0) {
 		return ret;
 	}
@@ -116,10 +117,11 @@ int argos_dfu_get_info(const struct device *dev, struct argos_bl_info *info)
 		return -EINVAL;
 	}
 
-	LOG_DBG("Getting bootloader info...");
+	LOG_DBG("Getting bootloader info (RAW mode)...");
 
-	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_GET_INFO, NULL, 0,
-				  rx_data, &rx_len, &status);
+	/* Use RAW transaction - bootloader expects no Protocol A+ framing */
+	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_GET_INFO, NULL, 0,
+				     rx_data, &rx_len, &status);
 	if (ret < 0) {
 		return ret;
 	}
@@ -159,9 +161,9 @@ int argos_dfu_erase(const struct device *dev)
 
 	LOG_INF("Erasing application flash (this may take a few seconds)...");
 
-	/* Erase can take 2-3 seconds - use longer timeout */
-	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_ERASE, NULL, 0,
-				  NULL, NULL, &status);
+	/* Use RAW transaction - bootloader expects no Protocol A+ framing */
+	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_ERASE, NULL, 0,
+				     NULL, NULL, &status);
 	if (ret < 0) {
 		LOG_ERR("Erase command failed: %d", ret);
 		return ret;
@@ -189,7 +191,7 @@ int argos_dfu_write_chunk(const struct device *dev, uint32_t addr,
 
 	LOG_DBG("Writing %zu bytes at 0x%08X", len, addr);
 
-	/* Step 1: Send WRITE_REQ with address and length */
+	/* Step 1: Send WRITE_REQ with address and length (RAW mode) */
 	req_data[0] = (addr >> 24) & 0xFF;
 	req_data[1] = (addr >> 16) & 0xFF;
 	req_data[2] = (addr >> 8) & 0xFF;
@@ -197,8 +199,8 @@ int argos_dfu_write_chunk(const struct device *dev, uint32_t addr,
 	req_data[4] = (len >> 8) & 0xFF;
 	req_data[5] = len & 0xFF;
 
-	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_WRITE_REQ, req_data, 6,
-				  NULL, NULL, &status);
+	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_WRITE_REQ, req_data, 6,
+				     NULL, NULL, &status);
 	if (ret < 0) {
 		LOG_ERR("Write request failed: %d", ret);
 		return ret;
@@ -209,9 +211,9 @@ int argos_dfu_write_chunk(const struct device *dev, uint32_t addr,
 		return -EIO;
 	}
 
-	/* Step 2: Send WRITE_DATA with actual data */
-	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_WRITE_DATA, data, len,
-				  NULL, NULL, &status);
+	/* Step 2: Send WRITE_DATA with actual data (RAW mode) */
+	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_WRITE_DATA, data, len,
+				     NULL, NULL, &status);
 	if (ret < 0) {
 		LOG_ERR("Write data failed: %d", ret);
 		return ret;
@@ -245,7 +247,7 @@ int argos_dfu_read(const struct device *dev, uint32_t addr, uint8_t *data, size_
 
 	LOG_DBG("Reading %zu bytes from 0x%08X", len, addr);
 
-	/* Step 1: Send READ_REQ with address and length */
+	/* Step 1: Send READ_REQ with address and length (RAW mode) */
 	req_data[0] = (addr >> 24) & 0xFF;
 	req_data[1] = (addr >> 16) & 0xFF;
 	req_data[2] = (addr >> 8) & 0xFF;
@@ -253,8 +255,8 @@ int argos_dfu_read(const struct device *dev, uint32_t addr, uint8_t *data, size_
 	req_data[4] = (len >> 8) & 0xFF;
 	req_data[5] = len & 0xFF;
 
-	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_READ_REQ, req_data, 6,
-				  NULL, NULL, &status);
+	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_READ_REQ, req_data, 6,
+				     NULL, NULL, &status);
 	if (ret < 0) {
 		return ret;
 	}
@@ -264,10 +266,10 @@ int argos_dfu_read(const struct device *dev, uint32_t addr, uint8_t *data, size_
 		return -EIO;
 	}
 
-	/* Step 2: Send READ_DATA to get the data */
+	/* Step 2: Send READ_DATA to get the data (RAW mode) */
 	rx_len = len;
-	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_READ_DATA, NULL, 0,
-				  data, &rx_len, &status);
+	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_READ_DATA, NULL, 0,
+				     data, &rx_len, &status);
 	if (ret < 0) {
 		return ret;
 	}
@@ -288,14 +290,14 @@ int argos_dfu_verify(const struct device *dev, uint32_t crc32)
 
 	LOG_INF("Verifying firmware CRC32: 0x%08X", crc32);
 
-	/* Send CRC32 in big-endian format */
+	/* Send CRC32 in big-endian format (RAW mode) */
 	crc_data[0] = (crc32 >> 24) & 0xFF;
 	crc_data[1] = (crc32 >> 16) & 0xFF;
 	crc_data[2] = (crc32 >> 8) & 0xFF;
 	crc_data[3] = crc32 & 0xFF;
 
-	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_VERIFY, crc_data, 4,
-				  NULL, NULL, &status);
+	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_VERIFY, crc_data, 4,
+				     NULL, NULL, &status);
 	if (ret < 0) {
 		LOG_ERR("Verify command failed: %d", ret);
 		return ret;
@@ -320,8 +322,8 @@ int argos_dfu_reset(const struct device *dev)
 
 	LOG_INF("Resetting device...");
 
-	/* Reset command - no response expected */
-	ret = argos_spi_send_only(dev, ARGOS_SPI_DFU_CMD_RESET, NULL, 0);
+	/* Reset command - no response expected (RAW mode) */
+	ret = argos_spi_send_only_raw(dev, ARGOS_SPI_DFU_CMD_RESET, NULL, 0);
 	if (ret < 0) {
 		LOG_ERR("Reset command failed: %d", ret);
 		return ret;
@@ -339,8 +341,8 @@ int argos_dfu_jump(const struct device *dev)
 
 	LOG_INF("Jumping to application...");
 
-	/* Jump command - device will reset to application */
-	ret = argos_spi_send_only(dev, ARGOS_SPI_DFU_CMD_JUMP, NULL, 0);
+	/* Jump command - device will reset to application (RAW mode) */
+	ret = argos_spi_send_only_raw(dev, ARGOS_SPI_DFU_CMD_JUMP, NULL, 0);
 	if (ret < 0) {
 		LOG_ERR("Jump command failed: %d", ret);
 		return ret;
@@ -363,8 +365,9 @@ int argos_dfu_get_status_spi(const struct device *dev, struct argos_dfu_status *
 		return -EINVAL;
 	}
 
-	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_GET_STATUS, NULL, 0,
-				  rx_data, &rx_len, &status);
+	/* Use RAW transaction - bootloader expects no Protocol A+ framing */
+	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_GET_STATUS, NULL, 0,
+				     rx_data, &rx_len, &status);
 	if (ret < 0) {
 		return ret;
 	}
@@ -394,8 +397,9 @@ int argos_dfu_abort(const struct device *dev)
 
 	LOG_WRN("Aborting DFU operation...");
 
-	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_ABORT, NULL, 0,
-				  NULL, NULL, &status);
+	/* Use RAW transaction - bootloader expects no Protocol A+ framing */
+	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_ABORT, NULL, 0,
+				     NULL, NULL, &status);
 	if (ret < 0) {
 		LOG_ERR("Abort command failed: %d", ret);
 		return ret;
@@ -419,11 +423,12 @@ int argos_dfu_set_header(const struct device *dev, const uint8_t *header)
 		return -EINVAL;
 	}
 
-	LOG_DBG("Setting application header (%d bytes)", ARGOS_DFU_HEADER_SIZE);
+	LOG_DBG("Setting application header (%d bytes, RAW mode)", ARGOS_DFU_HEADER_SIZE);
 
-	ret = argos_spi_transact(dev, ARGOS_SPI_DFU_CMD_SET_HEADER,
-				  header, ARGOS_DFU_HEADER_SIZE,
-				  NULL, NULL, &status);
+	/* Use RAW transaction - bootloader expects no Protocol A+ framing */
+	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_SET_HEADER,
+				     header, ARGOS_DFU_HEADER_SIZE,
+				     NULL, NULL, &status);
 	if (ret < 0) {
 		LOG_ERR("Set header failed: %d", ret);
 		return ret;

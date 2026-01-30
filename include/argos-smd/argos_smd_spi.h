@@ -288,6 +288,44 @@ int argos_spi_reset(const struct device *dev);
  */
 int argos_spi_diagnostic(const struct device *dev);
 
+/**
+ * @brief Raw SPI transaction for bootloader DFU (no Protocol A+ framing)
+ *
+ * The STM32 bootloader expects raw commands without Protocol A+ framing:
+ * - TX: [CMD] [PAYLOAD...]
+ * - RX: [STATUS] [RESPONSE_DATA...]
+ *
+ * This function handles the timing between TX and RX phases (10-20ms delay)
+ * required for the bootloader to process the command.
+ *
+ * @param dev Pointer to device structure
+ * @param cmd Command byte (0x30-0x3F for DFU commands)
+ * @param tx_data Pointer to payload data (can be NULL if tx_len is 0)
+ * @param tx_len Length of payload data
+ * @param rx_data Buffer to receive response data (can be NULL)
+ * @param rx_len Pointer to expected/received response data length
+ * @param status Pointer to receive DFU status code
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_transact_raw(const struct device *dev, uint8_t cmd,
+			   const uint8_t *tx_data, size_t tx_len,
+			   uint8_t *rx_data, size_t *rx_len, uint8_t *status);
+
+/**
+ * @brief Raw SPI send-only for bootloader DFU (no response expected)
+ *
+ * Used for commands that cause immediate reset (RESET, JUMP) where
+ * no response can be read.
+ *
+ * @param dev Pointer to device structure
+ * @param cmd Command byte
+ * @param tx_data Pointer to payload data (can be NULL)
+ * @param tx_len Length of payload data
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_send_only_raw(const struct device *dev, uint8_t cmd,
+			    const uint8_t *tx_data, size_t tx_len);
+
 #ifdef __cplusplus
 }
 #endif

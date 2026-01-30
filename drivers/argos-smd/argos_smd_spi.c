@@ -390,6 +390,157 @@ int argos_spi_send_only(const struct device *dev, uint8_t cmd,
 	return ret;
 }
 
+int argos_spi_transact_raw(const struct device *dev, uint8_t cmd,
+			   const uint8_t *tx_data, size_t tx_len,
+			   uint8_t *rx_data, size_t *rx_len, uint8_t *status)
+{
+	const struct argos_spi_config *cfg = dev->config;
+	struct argos_spi_data *data = dev->data;
+	int ret;
+
+	if (tx_len > ARGOS_SPI_MAX_PAYLOAD) {
+		LOG_ERR("TX payload too large: %zu", tx_len);
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&data->lock, K_FOREVER);
+
+	/* Build raw TX frame: [CMD] [PAYLOAD...] */
+	data->tx_buf[0] = cmd;
+	if (tx_data && tx_len > 0) {
+		memcpy(&data->tx_buf[1], tx_data, tx_len);
+	}
+	size_t frame_len = 1 + tx_len;
+
+	LOG_DBG("RAW TX: cmd=0x%02X, len=%zu", cmd, tx_len);
+	LOG_HEXDUMP_DBG(data->tx_buf, frame_len, "RAW TX frame");
+
+	/* TX: Send command */
+	struct spi_buf tx_spi_buf = {
+		.buf = data->tx_buf,
+		.len = frame_len,
+	};
+	struct spi_buf_set tx_set = {
+		.buffers = &tx_spi_buf,
+		.count = 1,
+	};
+
+	ret = spi_write_dt(&cfg->spi, &tx_set);
+	if (ret < 0) {
+		LOG_ERR("SPI write failed: %d", ret);
+		goto unlock;
+	}
+
+	/*
+	 * Wait for bootloader to process command (10-20ms).
+	 * The bootloader needs time to:
+	 * 1. Detect end of SPI transaction (CS rising)
+	 * 2. Process the command
+	 * 3. Prepare the response buffer
+	 */
+	k_msleep(15);
+
+	/* Determine expected RX length: status byte + optional response data */
+	size_t rx_expect = 1;  /* At minimum, status byte */
+	if (rx_len && *rx_len > 0) {
+		rx_expect += *rx_len;
+	} else {
+		/* Default: read up to 32 bytes for variable-length responses */
+		rx_expect += 32;
+	}
+
+	/* Cap at buffer size */
+	if (rx_expect > ARGOS_SPI_MAX_FRAME_SIZE) {
+		rx_expect = ARGOS_SPI_MAX_FRAME_SIZE;
+	}
+
+	/* RX: Clock out response using dummy 0xFF bytes on MOSI */
+	memset(data->tx_buf, 0xFF, rx_expect);
+	memset(data->rx_buf, 0xFF, sizeof(data->rx_buf));
+
+	struct spi_buf tx_dummy_buf = {
+		.buf = data->tx_buf,
+		.len = rx_expect,
+	};
+	struct spi_buf_set tx_dummy_set = {
+		.buffers = &tx_dummy_buf,
+		.count = 1,
+	};
+
+	struct spi_buf rx_spi_buf = {
+		.buf = data->rx_buf,
+		.len = rx_expect,
+	};
+	struct spi_buf_set rx_set = {
+		.buffers = &rx_spi_buf,
+		.count = 1,
+	};
+
+	ret = spi_transceive_dt(&cfg->spi, &tx_dummy_set, &rx_set);
+	if (ret < 0) {
+		LOG_ERR("SPI transceive failed: %d", ret);
+		goto unlock;
+	}
+
+	LOG_HEXDUMP_DBG(data->rx_buf, rx_expect, "RAW RX");
+
+	/* Parse response: [STATUS] [DATA...] */
+	*status = data->rx_buf[0];
+	LOG_DBG("RAW RX: status=0x%02X", *status);
+
+	if (rx_data && rx_len && *rx_len > 0) {
+		size_t copy_len = MIN(*rx_len, rx_expect - 1);
+		memcpy(rx_data, &data->rx_buf[1], copy_len);
+		*rx_len = copy_len;
+	}
+
+	ret = 0;
+
+unlock:
+	k_mutex_unlock(&data->lock);
+	return ret;
+}
+
+int argos_spi_send_only_raw(const struct device *dev, uint8_t cmd,
+			    const uint8_t *tx_data, size_t tx_len)
+{
+	const struct argos_spi_config *cfg = dev->config;
+	struct argos_spi_data *data = dev->data;
+	int ret;
+
+	if (tx_len > ARGOS_SPI_MAX_PAYLOAD) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&data->lock, K_FOREVER);
+
+	/* Build raw TX frame: [CMD] [PAYLOAD...] */
+	data->tx_buf[0] = cmd;
+	if (tx_data && tx_len > 0) {
+		memcpy(&data->tx_buf[1], tx_data, tx_len);
+	}
+	size_t frame_len = 1 + tx_len;
+
+	LOG_DBG("RAW TX (no response): cmd=0x%02X", cmd);
+
+	struct spi_buf tx_spi_buf = {
+		.buf = data->tx_buf,
+		.len = frame_len,
+	};
+	struct spi_buf_set tx_set = {
+		.buffers = &tx_spi_buf,
+		.count = 1,
+	};
+
+	ret = spi_write_dt(&cfg->spi, &tx_set);
+	if (ret < 0) {
+		LOG_ERR("SPI write failed: %d", ret);
+	}
+
+	k_mutex_unlock(&data->lock);
+	return ret;
+}
+
 int argos_spi_ping(const struct device *dev)
 {
 	uint8_t status;
