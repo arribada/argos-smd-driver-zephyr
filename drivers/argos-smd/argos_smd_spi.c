@@ -2,6 +2,13 @@
  * Copyright (c) 2025 Arribada Initiative
  *
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Argos SMD SPI Driver - Pipelined Single-Transaction Protocol
+ *
+ * This driver implements a pipelined protocol where:
+ * - Each transaction is a fixed 64 bytes
+ * - Master sends command, slave sends response to PREVIOUS command
+ * - For immediate response: send CMD, then send NOP to get response
  */
 
 #include <zephyr/kernel.h>
@@ -18,9 +25,6 @@ LOG_MODULE_REGISTER(argos_smd_spi, CONFIG_ARGOS_SMD_LOG_LEVEL);
 
 /**
  * @brief Calculate CRC-8 CCITT checksum
- *
- * Polynomial: x^8 + x^2 + x + 1 (0x07)
- * Initial value: 0x00
  */
 uint8_t argos_spi_crc8_ccitt(const uint8_t *data, size_t len)
 {
@@ -41,7 +45,7 @@ uint8_t argos_spi_crc8_ccitt(const uint8_t *data, size_t len)
 }
 
 /**
- * @brief Build a Protocol A+ request frame
+ * @brief Build a Protocol A+ request frame into a 64-byte transaction buffer
  */
 static size_t build_request_frame(uint8_t *buf, uint8_t seq, uint8_t cmd,
 				  const uint8_t *data, size_t data_len)
@@ -70,31 +74,51 @@ static size_t build_request_frame(uint8_t *buf, uint8_t seq, uint8_t cmd,
 	buf[idx] = argos_spi_crc8_ccitt(buf, idx);
 	idx++;
 
-	return idx;
+	/* Pad rest with 0xFF to fill transaction size */
+	if (idx < ARGOS_SPI_TRANSACTION_SIZE) {
+		memset(&buf[idx], 0xFF, ARGOS_SPI_TRANSACTION_SIZE - idx);
+	}
+
+	return idx;  /* Return actual frame length (not padded size) */
 }
 
 /**
- * @brief Parse a Protocol A+ response frame
+ * @brief Parse a Protocol A+ response from RX buffer
+ *
+ * Handles finding the response magic byte, skipping idle patterns.
  */
 static int parse_response_frame(const uint8_t *buf, size_t buf_len,
 				struct argos_spi_response *resp)
 {
-	if (buf_len < ARGOS_SPI_HEADER_SIZE + ARGOS_SPI_CRC_SIZE) {
-		LOG_ERR("Response too short: %zu bytes", buf_len);
+	/* Find response magic byte, skip idle pattern (0xAA) and 0xFF */
+	size_t offset = 0;
+	while (offset < buf_len) {
+		if (buf[offset] == ARGOS_SPI_MAGIC_RESPONSE) {
+			break;
+		}
+		if (buf[offset] != ARGOS_SPI_IDLE_PATTERN && buf[offset] != 0xFF) {
+			/* Unknown pattern - not a valid response */
+			break;
+		}
+		offset++;
+	}
+
+	if (offset >= buf_len || buf[offset] != ARGOS_SPI_MAGIC_RESPONSE) {
+		LOG_DBG("No response magic found (first byte: 0x%02X at offset %zu)",
+			buf[0], offset);
+		return -ENODATA;
+	}
+
+	/* Check minimum size for header */
+	if (buf_len - offset < ARGOS_SPI_HEADER_SIZE + ARGOS_SPI_CRC_SIZE) {
+		LOG_ERR("Response too short after offset %zu", offset);
 		return -EINVAL;
 	}
 
-	/* Check magic byte */
-	if (buf[0] != ARGOS_SPI_MAGIC_RESPONSE) {
-		LOG_ERR("Invalid magic byte: 0x%02X (expected 0x%02X)",
-			buf[0], ARGOS_SPI_MAGIC_RESPONSE);
-		return -EPROTO;
-	}
-
-	resp->magic = buf[0];
-	resp->seq = buf[1];
-	resp->status = buf[2];
-	resp->len = buf[3];
+	resp->magic = buf[offset];
+	resp->seq = buf[offset + 1];
+	resp->status = buf[offset + 2];
+	resp->len = buf[offset + 3];
 
 	/* Validate length */
 	if (resp->len > ARGOS_SPI_MAX_PAYLOAD) {
@@ -102,23 +126,22 @@ static int parse_response_frame(const uint8_t *buf, size_t buf_len,
 		return -EMSGSIZE;
 	}
 
-	/* Check if we have enough data */
+	/* Check if we have enough data for payload + CRC */
 	size_t expected_len = ARGOS_SPI_HEADER_SIZE + resp->len + ARGOS_SPI_CRC_SIZE;
-	if (buf_len < expected_len) {
-		LOG_ERR("Response incomplete: got %zu, expected %zu", buf_len, expected_len);
+	if (buf_len - offset < expected_len) {
+		LOG_ERR("Response incomplete: got %zu, expected %zu",
+			buf_len - offset, expected_len);
 		return -EINVAL;
 	}
 
 	/* Copy payload */
 	if (resp->len > 0) {
-		memcpy(resp->data, &buf[4], resp->len);
+		memcpy(resp->data, &buf[offset + 4], resp->len);
 	}
 
-	/* Get CRC */
-	resp->crc = buf[4 + resp->len];
-
-	/* Verify CRC */
-	uint8_t calc_crc = argos_spi_crc8_ccitt(buf, 4 + resp->len);
+	/* Get and verify CRC */
+	resp->crc = buf[offset + 4 + resp->len];
+	uint8_t calc_crc = argos_spi_crc8_ccitt(&buf[offset], 4 + resp->len);
 	if (calc_crc != resp->crc) {
 		LOG_ERR("CRC mismatch: calculated 0x%02X, received 0x%02X",
 			calc_crc, resp->crc);
@@ -129,27 +152,17 @@ static int parse_response_frame(const uint8_t *buf, size_t buf_len,
 }
 
 /**
- * @brief Wait for device to be ready (check IRQ pin if available)
+ * @brief Perform a single 64-byte SPI transaction
  */
-static int wait_device_ready(const struct argos_spi_config *cfg, k_timeout_t timeout)
+static int spi_transaction_64(const struct spi_dt_spec *spi,
+			      uint8_t *tx_buf, uint8_t *rx_buf)
 {
-	/* If IRQ/ready pin is configured, wait for it */
-	if (cfg->irq_gpio.port != NULL) {
-		int64_t start = k_uptime_get();
-		int64_t timeout_ms = k_ticks_to_ms_floor64(timeout.ticks);
+	struct spi_buf spi_tx = { .buf = tx_buf, .len = ARGOS_SPI_TRANSACTION_SIZE };
+	struct spi_buf spi_rx = { .buf = rx_buf, .len = ARGOS_SPI_TRANSACTION_SIZE };
+	struct spi_buf_set tx_set = { .buffers = &spi_tx, .count = 1 };
+	struct spi_buf_set rx_set = { .buffers = &spi_rx, .count = 1 };
 
-		while ((k_uptime_get() - start) < timeout_ms) {
-			if (gpio_pin_get_dt(&cfg->irq_gpio) == 1) {
-				return 0;
-			}
-			k_msleep(1);
-		}
-		return -ETIMEDOUT;
-	}
-
-	/* No IRQ pin - just use a small delay */
-	k_msleep(1);
-	return 0;
+	return spi_transceive_dt(spi, &tx_set, &rx_set);
 }
 
 int argos_spi_init(const struct device *dev)
@@ -195,14 +208,19 @@ int argos_spi_init(const struct device *dev)
 	/* Initialize sequence number */
 	data->seq_num = 0;
 
-	LOG_INF("Argos SMD SPI initialized");
+	LOG_INF("Argos SMD SPI initialized (pipelined protocol, %d-byte transactions)",
+		ARGOS_SPI_TRANSACTION_SIZE);
 
 	return 0;
 }
 
-int argos_spi_transact(const struct device *dev, uint8_t cmd,
-			const uint8_t *tx_data, size_t tx_len,
-			uint8_t *rx_data, size_t *rx_len, uint8_t *status)
+/**
+ * @brief Internal transaction function with configurable delay
+ */
+static int argos_spi_transact_internal(const struct device *dev, uint8_t cmd,
+				       const uint8_t *tx_data, size_t tx_len,
+				       uint8_t *rx_data, size_t *rx_len,
+				       uint8_t *status, uint32_t delay_ms)
 {
 	const struct argos_spi_config *cfg = dev->config;
 	struct argos_spi_data *data = dev->data;
@@ -215,114 +233,62 @@ int argos_spi_transact(const struct device *dev, uint8_t cmd,
 
 	k_mutex_lock(&data->lock, K_FOREVER);
 
-	/* Build request frame */
-	size_t frame_len = build_request_frame(data->tx_buf, data->seq_num, cmd,
-					       tx_data, tx_len);
-
-	LOG_DBG("Sending cmd 0x%02X, seq %u, len %zu", cmd, data->seq_num, tx_len);
-	LOG_HEXDUMP_DBG(data->tx_buf, frame_len, "TX frame");
-
-	/* Prepare SPI buffers */
-	struct spi_buf tx_spi_buf = {
-		.buf = data->tx_buf,
-		.len = frame_len,
-	};
-	struct spi_buf_set tx_set = {
-		.buffers = &tx_spi_buf,
-		.count = 1,
-	};
-
-	/* Send request */
-	ret = spi_write_dt(&cfg->spi, &tx_set);
-	if (ret < 0) {
-		LOG_ERR("SPI write failed: %d", ret);
-		goto unlock;
-	}
-
-	/* Wait for device to be ready */
-	ret = wait_device_ready(cfg, K_MSEC(ARGOS_SPI_TIMEOUT_MS));
-	if (ret < 0) {
-		LOG_ERR("Device not ready: %d", ret);
-		goto unlock;
-	}
-
 	/*
-	 * IMPORTANT: Delay between TX and RX
-	 * The STM32 slave processes commands in its main loop.
-	 * It needs time to:
-	 * 1. Detect end of SPI transaction (CS rising)
-	 * 2. Process the command in main loop
-	 * 3. Prepare the response buffer
-	 * 4. Be ready for the next SPI transaction
-	 *
-	 * 10ms should be enough for simple commands.
-	 * Longer commands (erase) may need more time.
+	 * Pipelined Protocol:
+	 * Transaction 1: Send CMD, receive previous response (discard)
+	 * Transaction 2: Send NOP, receive response to CMD
 	 */
-	k_msleep(10);
 
-	/*
-	 * Read response using transceive with 0xFF dummy bytes
-	 * Protocol A+ requires:
-	 * - Transaction 1: TX=[CMD] → RX=[0xFF...] (slave idle)
-	 * - Transaction 2: TX=[0xFF...] → RX=[RESPONSE] (actual response)
-	 *
-	 * The slave uses TransmitReceive, so we must send 0xFF while reading.
-	 */
-	memset(data->tx_buf, 0xFF, ARGOS_SPI_MAX_FRAME_SIZE);  /* Dummy TX bytes */
-	memset(data->rx_buf, 0xAB, sizeof(data->rx_buf));       /* Clear RX buffer */
+	/* Build command frame */
+	build_request_frame(data->tx_buf, data->seq_num, cmd, tx_data, tx_len);
 
-	struct spi_buf tx_dummy_buf = {
-		.buf = data->tx_buf,
-		.len = ARGOS_SPI_MAX_FRAME_SIZE,
-	};
-	struct spi_buf_set tx_dummy_set = {
-		.buffers = &tx_dummy_buf,
-		.count = 1,
-	};
+	LOG_DBG("TX1 [CMD 0x%02X seq %u]: %02X %02X %02X %02X %02X",
+		cmd, data->seq_num,
+		data->tx_buf[0], data->tx_buf[1], data->tx_buf[2],
+		data->tx_buf[3], data->tx_buf[4]);
 
-	struct spi_buf rx_spi_buf = {
-		.buf = data->rx_buf,
-		.len = ARGOS_SPI_MAX_FRAME_SIZE,
-	};
-	struct spi_buf_set rx_set = {
-		.buffers = &rx_spi_buf,
-		.count = 1,
-	};
-
-	/* Use transceive to send 0xFF while reading response */
-	ret = spi_transceive_dt(&cfg->spi, &tx_dummy_set, &rx_set);
+	/* Transaction 1: Send command */
+	memset(data->rx_buf, 0, sizeof(data->rx_buf));
+	ret = spi_transaction_64(&cfg->spi, data->tx_buf, data->rx_buf);
 	if (ret < 0) {
-		LOG_ERR("SPI transceive failed: %d", ret);
+		LOG_ERR("Transaction 1 failed: %d", ret);
 		goto unlock;
 	}
 
-	LOG_HEXDUMP_DBG(data->rx_buf, 16, "RX raw");
+	LOG_DBG("RX1: %02X %02X %02X %02X %02X %02X %02X %02X",
+		data->rx_buf[0], data->rx_buf[1], data->rx_buf[2], data->rx_buf[3],
+		data->rx_buf[4], data->rx_buf[5], data->rx_buf[6], data->rx_buf[7]);
 
-	/* Find response magic byte (skip any leading 0xFF padding) */
-	size_t rx_start = 0;
-	while (rx_start < ARGOS_SPI_MAX_FRAME_SIZE && data->rx_buf[rx_start] == 0xFF) {
-		rx_start++;
-	}
+	/* Delay for STM32 to process command */
+	k_msleep(delay_ms);
 
-	if (rx_start >= ARGOS_SPI_MAX_FRAME_SIZE) {
-		LOG_ERR("No response received");
-		ret = -ETIMEDOUT;
+	/* Build NOP frame to retrieve response */
+	data->seq_num++;
+	build_request_frame(data->tx_buf, data->seq_num, ARGOS_SPI_CMD_NOP, NULL, 0);
+
+	LOG_DBG("TX2 [NOP seq %u]: %02X %02X %02X %02X %02X",
+		data->seq_num,
+		data->tx_buf[0], data->tx_buf[1], data->tx_buf[2],
+		data->tx_buf[3], data->tx_buf[4]);
+
+	/* Transaction 2: Send NOP, receive response */
+	memset(data->rx_buf, 0, sizeof(data->rx_buf));
+	ret = spi_transaction_64(&cfg->spi, data->tx_buf, data->rx_buf);
+	if (ret < 0) {
+		LOG_ERR("Transaction 2 failed: %d", ret);
 		goto unlock;
 	}
+
+	LOG_DBG("RX2: %02X %02X %02X %02X %02X %02X %02X %02X",
+		data->rx_buf[0], data->rx_buf[1], data->rx_buf[2], data->rx_buf[3],
+		data->rx_buf[4], data->rx_buf[5], data->rx_buf[6], data->rx_buf[7]);
 
 	/* Parse response */
 	struct argos_spi_response resp;
-	ret = parse_response_frame(&data->rx_buf[rx_start],
-				   ARGOS_SPI_MAX_FRAME_SIZE - rx_start, &resp);
+	ret = parse_response_frame(data->rx_buf, ARGOS_SPI_TRANSACTION_SIZE, &resp);
 	if (ret < 0) {
 		LOG_ERR("Failed to parse response: %d", ret);
 		goto unlock;
-	}
-
-	/* Verify sequence number matches */
-	if (resp.seq != data->seq_num) {
-		LOG_WRN("Sequence mismatch: sent %u, got %u", data->seq_num, resp.seq);
-		/* Continue anyway - some devices may not track sequence */
 	}
 
 	LOG_DBG("Response: status 0x%02X, len %u", resp.status, resp.len);
@@ -351,6 +317,15 @@ unlock:
 	return ret;
 }
 
+int argos_spi_transact(const struct device *dev, uint8_t cmd,
+		       const uint8_t *tx_data, size_t tx_len,
+		       uint8_t *rx_data, size_t *rx_len, uint8_t *status)
+{
+	return argos_spi_transact_internal(dev, cmd, tx_data, tx_len,
+					   rx_data, rx_len, status,
+					   ARGOS_SPI_PIPELINE_DELAY_MS);
+}
+
 int argos_spi_send_only(const struct device *dev, uint8_t cmd,
 			 const uint8_t *tx_data, size_t tx_len)
 {
@@ -365,23 +340,15 @@ int argos_spi_send_only(const struct device *dev, uint8_t cmd,
 	k_mutex_lock(&data->lock, K_FOREVER);
 
 	/* Build and send request frame */
-	size_t frame_len = build_request_frame(data->tx_buf, data->seq_num, cmd,
-					       tx_data, tx_len);
+	build_request_frame(data->tx_buf, data->seq_num, cmd, tx_data, tx_len);
 
 	LOG_DBG("Sending cmd 0x%02X (no response expected)", cmd);
 
-	struct spi_buf tx_spi_buf = {
-		.buf = data->tx_buf,
-		.len = frame_len,
-	};
-	struct spi_buf_set tx_set = {
-		.buffers = &tx_spi_buf,
-		.count = 1,
-	};
-
-	ret = spi_write_dt(&cfg->spi, &tx_set);
+	/* Single transaction - no response expected */
+	memset(data->rx_buf, 0, sizeof(data->rx_buf));
+	ret = spi_transaction_64(&cfg->spi, data->tx_buf, data->rx_buf);
 	if (ret < 0) {
-		LOG_ERR("SPI write failed: %d", ret);
+		LOG_ERR("SPI transaction failed: %d", ret);
 	} else {
 		data->seq_num++;
 	}
@@ -405,92 +372,59 @@ int argos_spi_transact_raw(const struct device *dev, uint8_t cmd,
 
 	k_mutex_lock(&data->lock, K_FOREVER);
 
-	/* Build raw TX frame: [CMD] [PAYLOAD...] */
+	/* Build raw TX frame: [CMD] [PAYLOAD...] padded to 64 bytes */
+	memset(data->tx_buf, 0xFF, ARGOS_SPI_TRANSACTION_SIZE);
 	data->tx_buf[0] = cmd;
 	if (tx_data && tx_len > 0) {
 		memcpy(&data->tx_buf[1], tx_data, tx_len);
 	}
-	size_t frame_len = 1 + tx_len;
 
 	LOG_DBG("RAW TX: cmd=0x%02X, len=%zu", cmd, tx_len);
-	LOG_HEXDUMP_DBG(data->tx_buf, frame_len, "RAW TX frame");
+	LOG_HEXDUMP_DBG(data->tx_buf, MIN(16, 1 + tx_len), "RAW TX frame");
 
-	/* TX: Send command */
-	struct spi_buf tx_spi_buf = {
-		.buf = data->tx_buf,
-		.len = frame_len,
-	};
-	struct spi_buf_set tx_set = {
-		.buffers = &tx_spi_buf,
-		.count = 1,
-	};
-
-	ret = spi_write_dt(&cfg->spi, &tx_set);
+	/* Transaction 1: Send command */
+	memset(data->rx_buf, 0, sizeof(data->rx_buf));
+	ret = spi_transaction_64(&cfg->spi, data->tx_buf, data->rx_buf);
 	if (ret < 0) {
-		LOG_ERR("SPI write failed: %d", ret);
+		LOG_ERR("SPI transaction 1 failed: %d", ret);
 		goto unlock;
 	}
 
-	/*
-	 * Wait for bootloader to process command (10-20ms).
-	 * The bootloader needs time to:
-	 * 1. Detect end of SPI transaction (CS rising)
-	 * 2. Process the command
-	 * 3. Prepare the response buffer
-	 */
-	k_msleep(15);
+	/* Delay for processing */
+	k_msleep(ARGOS_SPI_PIPELINE_DELAY_MS);
 
-	/* Determine expected RX length: status byte + optional response data */
-	size_t rx_expect = 1;  /* At minimum, status byte */
-	if (rx_len && *rx_len > 0) {
-		rx_expect += *rx_len;
-	} else {
-		/* Default: read up to 32 bytes for variable-length responses */
-		rx_expect += 32;
-	}
-
-	/* Cap at buffer size */
-	if (rx_expect > ARGOS_SPI_MAX_FRAME_SIZE) {
-		rx_expect = ARGOS_SPI_MAX_FRAME_SIZE;
-	}
-
-	/* RX: Clock out response using dummy 0xFF bytes on MOSI */
-	memset(data->tx_buf, 0xFF, rx_expect);
-	memset(data->rx_buf, 0xFF, sizeof(data->rx_buf));
-
-	struct spi_buf tx_dummy_buf = {
-		.buf = data->tx_buf,
-		.len = rx_expect,
-	};
-	struct spi_buf_set tx_dummy_set = {
-		.buffers = &tx_dummy_buf,
-		.count = 1,
-	};
-
-	struct spi_buf rx_spi_buf = {
-		.buf = data->rx_buf,
-		.len = rx_expect,
-	};
-	struct spi_buf_set rx_set = {
-		.buffers = &rx_spi_buf,
-		.count = 1,
-	};
-
-	ret = spi_transceive_dt(&cfg->spi, &tx_dummy_set, &rx_set);
+	/* Transaction 2: Send dummy to get response */
+	memset(data->tx_buf, 0xFF, ARGOS_SPI_TRANSACTION_SIZE);
+	memset(data->rx_buf, 0, sizeof(data->rx_buf));
+	ret = spi_transaction_64(&cfg->spi, data->tx_buf, data->rx_buf);
 	if (ret < 0) {
-		LOG_ERR("SPI transceive failed: %d", ret);
+		LOG_ERR("SPI transaction 2 failed: %d", ret);
 		goto unlock;
 	}
 
-	LOG_HEXDUMP_DBG(data->rx_buf, rx_expect, "RAW RX");
+	LOG_HEXDUMP_DBG(data->rx_buf, 16, "RAW RX");
 
-	/* Parse response: [STATUS] [DATA...] */
-	*status = data->rx_buf[0];
-	LOG_DBG("RAW RX: status=0x%02X", *status);
+	/* Parse raw response: [STATUS] [DATA...] */
+	/* Skip leading 0xAA or 0xFF */
+	size_t offset = 0;
+	while (offset < ARGOS_SPI_TRANSACTION_SIZE &&
+	       (data->rx_buf[offset] == 0xAA || data->rx_buf[offset] == 0xFF)) {
+		offset++;
+	}
+
+	if (offset >= ARGOS_SPI_TRANSACTION_SIZE) {
+		LOG_ERR("No valid response in raw transaction");
+		ret = -ENODATA;
+		goto unlock;
+	}
+
+	*status = data->rx_buf[offset];
+	LOG_DBG("RAW RX: status=0x%02X at offset %zu", *status, offset);
 
 	if (rx_data && rx_len && *rx_len > 0) {
-		size_t copy_len = MIN(*rx_len, rx_expect - 1);
-		memcpy(rx_data, &data->rx_buf[1], copy_len);
+		size_t avail = ARGOS_SPI_TRANSACTION_SIZE - offset - 1;
+		size_t copy_len = MIN(*rx_len, avail);
+		memcpy(rx_data, &data->rx_buf[offset + 1], copy_len);
 		*rx_len = copy_len;
 	}
 
@@ -514,27 +448,19 @@ int argos_spi_send_only_raw(const struct device *dev, uint8_t cmd,
 
 	k_mutex_lock(&data->lock, K_FOREVER);
 
-	/* Build raw TX frame: [CMD] [PAYLOAD...] */
+	/* Build raw TX frame padded to 64 bytes */
+	memset(data->tx_buf, 0xFF, ARGOS_SPI_TRANSACTION_SIZE);
 	data->tx_buf[0] = cmd;
 	if (tx_data && tx_len > 0) {
 		memcpy(&data->tx_buf[1], tx_data, tx_len);
 	}
-	size_t frame_len = 1 + tx_len;
 
 	LOG_DBG("RAW TX (no response): cmd=0x%02X", cmd);
 
-	struct spi_buf tx_spi_buf = {
-		.buf = data->tx_buf,
-		.len = frame_len,
-	};
-	struct spi_buf_set tx_set = {
-		.buffers = &tx_spi_buf,
-		.count = 1,
-	};
-
-	ret = spi_write_dt(&cfg->spi, &tx_set);
+	memset(data->rx_buf, 0, sizeof(data->rx_buf));
+	ret = spi_transaction_64(&cfg->spi, data->tx_buf, data->rx_buf);
 	if (ret < 0) {
-		LOG_ERR("SPI write failed: %d", ret);
+		LOG_ERR("SPI transaction failed: %d", ret);
 	}
 
 	k_mutex_unlock(&data->lock);
@@ -546,7 +472,7 @@ int argos_spi_ping(const struct device *dev)
 	uint8_t status;
 	int ret;
 
-	LOG_DBG("Pinging device (app mode)");
+	LOG_DBG("Pinging device");
 
 	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_PING, NULL, 0, NULL, NULL, &status);
 	if (ret < 0) {
@@ -630,242 +556,266 @@ int argos_spi_diagnostic(const struct device *dev)
 	const struct argos_spi_config *cfg = dev->config;
 	struct argos_spi_data *data = dev->data;
 	int ret;
-	uint8_t tx_buf[32];
-	uint8_t rx_buf[32];
 
-	LOG_INF("=== SPI DIAGNOSTIC ===");
-
-	/* Log SPI configuration */
-	LOG_INF("SPI config:");
-	LOG_INF("  Frequency: %u Hz", cfg->spi.config.frequency);
-	LOG_INF("  Operation: 0x%04X", cfg->spi.config.operation);
-	LOG_INF("  CPOL=%d, CPHA=%d (Mode %d)",
-		(cfg->spi.config.operation & SPI_MODE_CPOL) ? 1 : 0,
-		(cfg->spi.config.operation & SPI_MODE_CPHA) ? 1 : 0,
-		((cfg->spi.config.operation & SPI_MODE_CPOL) ? 2 : 0) |
-		((cfg->spi.config.operation & SPI_MODE_CPHA) ? 1 : 0));
-
-	/* Check GPIO status */
-	if (cfg->irq_gpio.port != NULL) {
-		int val = gpio_pin_get_dt(&cfg->irq_gpio);
-		LOG_INF("IRQ GPIO: %s (value: %d)",
-			gpio_is_ready_dt(&cfg->irq_gpio) ? "ready" : "NOT ready", val);
-	} else {
-		LOG_INF("IRQ GPIO: not configured");
-	}
-
-	if (cfg->reset_gpio.port != NULL) {
-		LOG_INF("Reset GPIO: %s",
-			gpio_is_ready_dt(&cfg->reset_gpio) ? "ready" : "NOT ready");
-	} else {
-		LOG_INF("Reset GPIO: not configured");
-	}
-
-	/* Check CS GPIO directly */
-	LOG_INF("");
-	LOG_INF("CS GPIO status:");
-	if (cfg->spi.config.cs.gpio.port != NULL) {
-		const struct gpio_dt_spec *cs_gpio = &cfg->spi.config.cs.gpio;
-		LOG_INF("  Port: %s, Pin: %d, Flags: 0x%x",
-			cs_gpio->port->name, cs_gpio->pin, cs_gpio->dt_flags);
-		if (gpio_is_ready_dt(cs_gpio)) {
-			LOG_INF("  Status: GPIO READY");
-			/* Try to manually toggle CS for testing */
-			LOG_INF("  Attempting manual CS toggle test...");
-			/* Note: The SPI driver manages CS, we can't easily toggle it manually
-			 * but we can at least verify the GPIO port is accessible */
-			int pin_val = gpio_pin_get_raw(cs_gpio->port, cs_gpio->pin);
-			LOG_INF("  Current CS pin state (raw): %d", pin_val);
-		} else {
-			LOG_ERR("  Status: GPIO NOT READY - P0.10 may still be in NFC mode!");
-			LOG_ERR("  Make sure UICR is properly flashed with nfct-pins-as-gpios");
-			LOG_ERR("  Try: 'nrfjprog --eraseall' then re-flash the firmware");
-		}
-	} else {
-		LOG_ERR("  CS GPIO: NOT CONFIGURED - check cs-gpios in devicetree");
-	}
+	LOG_INF("=== SPI DIAGNOSTIC (Pipelined Protocol) ===");
+	LOG_INF("Transaction size: %d bytes", ARGOS_SPI_TRANSACTION_SIZE);
+	LOG_INF("SPI frequency: %u Hz", cfg->spi.config.frequency);
 
 	k_mutex_lock(&data->lock, K_FOREVER);
 
-	/* ===== TEST 1: Full-duplex transceive ===== */
+	/* Test 1: Basic transaction */
 	LOG_INF("");
-	LOG_INF("--- TEST 1: Full-duplex transceive ---");
-	LOG_INF("Send PING command and read simultaneously");
+	LOG_INF("--- TEST 1: Basic 64-byte transaction ---");
 
-	/* Build ping frame */
-	tx_buf[0] = ARGOS_SPI_MAGIC_REQUEST;  /* 0xAA */
-	tx_buf[1] = 0x00;                       /* Sequence */
-	tx_buf[2] = ARGOS_SPI_CMD_PING;           /* 0x01 */
-	tx_buf[3] = 0x00;                       /* Length */
-	tx_buf[4] = argos_spi_crc8_ccitt(tx_buf, 4);
+	memset(data->tx_buf, 0xFF, ARGOS_SPI_TRANSACTION_SIZE);
+	memset(data->rx_buf, 0xAB, ARGOS_SPI_TRANSACTION_SIZE);
 
-	LOG_INF("TX: AA 00 01 00 %02X (PING)", tx_buf[4]);
-
-	memset(rx_buf, 0xAB, sizeof(rx_buf));
-
-	struct spi_buf spi_tx = { .buf = tx_buf, .len = 5 };
-	struct spi_buf spi_rx = { .buf = rx_buf, .len = 5 };
-	struct spi_buf_set tx_set = { .buffers = &spi_tx, .count = 1 };
-	struct spi_buf_set rx_set = { .buffers = &spi_rx, .count = 1 };
-
-	ret = spi_transceive_dt(&cfg->spi, &tx_set, &rx_set);
+	ret = spi_transaction_64(&cfg->spi, data->tx_buf, data->rx_buf);
 	if (ret < 0) {
-		LOG_ERR("spi_transceive failed: %d", ret);
+		LOG_ERR("Transaction failed: %d", ret);
 	} else {
-		LOG_INF("RX during TX (full-duplex):");
-		LOG_HEXDUMP_INF(rx_buf, 8, "  ");
-		if (rx_buf[0] == 0x00) {
-			LOG_INF("  -> Slave TX buffer empty during our TX (normal)");
-		} else if (rx_buf[0] == 0xFF) {
-			LOG_WRN("  -> MISO high/floating");
-		} else if (rx_buf[0] == 0xAB) {
-			LOG_WRN("  -> Buffer unchanged - transceive issue");
-		} else {
-			LOG_INF("  -> Got data: 0x%02X", rx_buf[0]);
+		LOG_INF("RX: %02X %02X %02X %02X %02X %02X %02X %02X",
+			data->rx_buf[0], data->rx_buf[1], data->rx_buf[2], data->rx_buf[3],
+			data->rx_buf[4], data->rx_buf[5], data->rx_buf[6], data->rx_buf[7]);
+
+		if (data->rx_buf[0] == ARGOS_SPI_IDLE_PATTERN) {
+			LOG_INF("Got idle pattern (0xAA) - STM32 responding!");
+		} else if (data->rx_buf[0] == 0xAB) {
+			LOG_ERR("RX unchanged - SPI not working");
 		}
 	}
 
-	/* ===== TEST 2: Separate TX then RX with transceive (0xFF TX) ===== */
+	/* Test 2: PING with pipelined protocol */
 	LOG_INF("");
-	LOG_INF("--- TEST 2: TX cmd, delay, then TX 0xFF to read response ---");
+	LOG_INF("--- TEST 2: PING (Pipelined) ---");
 
-	uint8_t dummy_tx[16];
-	memset(dummy_tx, 0xFF, sizeof(dummy_tx));  /* MOSI must be 0xFF during read */
+	/* Build PING frame */
+	build_request_frame(data->tx_buf, 0, ARGOS_SPI_CMD_PING, NULL, 0);
+	LOG_INF("TX1 [PING]: %02X %02X %02X %02X %02X",
+		data->tx_buf[0], data->tx_buf[1], data->tx_buf[2],
+		data->tx_buf[3], data->tx_buf[4]);
 
-	int delays_ms[] = {1, 10, 50, 100, 200, 500};
-	for (int d = 0; d < ARRAY_SIZE(delays_ms); d++) {
-		LOG_INF("Delay: %d ms", delays_ms[d]);
-
-		/* TX command */
-		struct spi_buf tx2 = { .buf = tx_buf, .len = 5 };
-		struct spi_buf_set tx2_set = { .buffers = &tx2, .count = 1 };
-		ret = spi_write_dt(&cfg->spi, &tx2_set);
-		if (ret < 0) {
-			LOG_ERR("  TX failed: %d", ret);
-			continue;
-		}
-
-		k_msleep(delays_ms[d]);
-
-		/* RX using transceive with 0xFF TX (STM32 requires 0xFF on MOSI) */
-		memset(rx_buf, 0xAB, sizeof(rx_buf));
-		struct spi_buf tx_dummy = { .buf = dummy_tx, .len = 16 };
-		struct spi_buf rx2 = { .buf = rx_buf, .len = 16 };
-		struct spi_buf_set tx_dummy_set = { .buffers = &tx_dummy, .count = 1 };
-		struct spi_buf_set rx2_set = { .buffers = &rx2, .count = 1 };
-		ret = spi_transceive_dt(&cfg->spi, &tx_dummy_set, &rx2_set);
-		if (ret < 0) {
-			LOG_ERR("  RX failed: %d", ret);
-			continue;
-		}
-
-		LOG_HEXDUMP_INF(rx_buf, 16, "  RX");
-
-		/* Check for magic anywhere in buffer */
-		for (int i = 0; i < 16; i++) {
-			if (rx_buf[i] == ARGOS_SPI_MAGIC_RESPONSE) {
-				LOG_INF("  SUCCESS! Magic 0x55 at byte %d, status=0x%02X",
-					i, rx_buf[i + 2]);
-				k_mutex_unlock(&data->lock);
-				return 0;
-			}
-		}
-	}
-
-	/* ===== TEST 3: Send dummy bytes to clock out response ===== */
-	LOG_INF("");
-	LOG_INF("--- TEST 3: TX command + clock dummy bytes ---");
-	LOG_INF("Send PING, then clock out 16 dummy bytes in same transaction");
-
-	/* Prepare: 5 bytes command + 16 dummy bytes (0xFF) */
-	memset(&tx_buf[5], 0xFF, 16);  /* Dummy bytes after command */
-	memset(rx_buf, 0xAB, sizeof(rx_buf));
-
-	struct spi_buf tx3 = { .buf = tx_buf, .len = 21 };  /* 5 cmd + 16 dummy */
-	struct spi_buf rx3 = { .buf = rx_buf, .len = 21 };
-	struct spi_buf_set tx3_set = { .buffers = &tx3, .count = 1 };
-	struct spi_buf_set rx3_set = { .buffers = &rx3, .count = 1 };
-
-	ret = spi_transceive_dt(&cfg->spi, &tx3_set, &rx3_set);
+	memset(data->rx_buf, 0, sizeof(data->rx_buf));
+	ret = spi_transaction_64(&cfg->spi, data->tx_buf, data->rx_buf);
 	if (ret < 0) {
-		LOG_ERR("spi_transceive failed: %d", ret);
+		LOG_ERR("TX1 failed: %d", ret);
+		goto done;
+	}
+
+	LOG_INF("RX1: %02X %02X %02X %02X %02X %02X %02X %02X",
+		data->rx_buf[0], data->rx_buf[1], data->rx_buf[2], data->rx_buf[3],
+		data->rx_buf[4], data->rx_buf[5], data->rx_buf[6], data->rx_buf[7]);
+
+	k_msleep(ARGOS_SPI_PIPELINE_DELAY_MS);
+
+	/* Build NOP frame */
+	build_request_frame(data->tx_buf, 1, ARGOS_SPI_CMD_NOP, NULL, 0);
+	LOG_INF("TX2 [NOP]: %02X %02X %02X %02X %02X",
+		data->tx_buf[0], data->tx_buf[1], data->tx_buf[2],
+		data->tx_buf[3], data->tx_buf[4]);
+
+	memset(data->rx_buf, 0, sizeof(data->rx_buf));
+	ret = spi_transaction_64(&cfg->spi, data->tx_buf, data->rx_buf);
+	if (ret < 0) {
+		LOG_ERR("TX2 failed: %d", ret);
+		goto done;
+	}
+
+	LOG_INF("RX2: %02X %02X %02X %02X %02X %02X %02X %02X",
+		data->rx_buf[0], data->rx_buf[1], data->rx_buf[2], data->rx_buf[3],
+		data->rx_buf[4], data->rx_buf[5], data->rx_buf[6], data->rx_buf[7]);
+
+	/* Check for response */
+	struct argos_spi_response resp;
+	ret = parse_response_frame(data->rx_buf, ARGOS_SPI_TRANSACTION_SIZE, &resp);
+	if (ret == 0) {
+		LOG_INF("SUCCESS! Got response: magic=0x%02X status=0x%02X len=%u",
+			resp.magic, resp.status, resp.len);
 	} else {
-		LOG_INF("Full RX (21 bytes):");
-		LOG_HEXDUMP_INF(rx_buf, 21, "  ");
-
-		/* Look for magic anywhere in response */
-		for (int i = 0; i < 21; i++) {
-			if (rx_buf[i] == ARGOS_SPI_MAGIC_RESPONSE) {
-				LOG_INF("  Magic 0x55 found at byte %d!", i);
-				LOG_INF("  Response starts at offset %d", i);
-				k_mutex_unlock(&data->lock);
-				return 0;
-			}
-		}
-		LOG_WRN("  No magic byte found in extended transaction");
+		LOG_WRN("No valid response found (err=%d)", ret);
 	}
 
-	/* ===== TEST 4: Analyze byte patterns ===== */
-	LOG_INF("");
-	LOG_INF("--- TEST 4: Byte pattern analysis ---");
-
-	/* Count different byte values in last RX */
-	int count_00 = 0, count_ff = 0, count_other = 0;
-	for (int i = 0; i < 21; i++) {
-		if (rx_buf[i] == 0x00) count_00++;
-		else if (rx_buf[i] == 0xFF) count_ff++;
-		else count_other++;
-	}
-	LOG_INF("Byte stats: 0x00=%d, 0xFF=%d, other=%d", count_00, count_ff, count_other);
-
-	if (count_other > 0) {
-		LOG_INF("Non-0x00/0xFF bytes found:");
-		for (int i = 0; i < 21; i++) {
-			if (rx_buf[i] != 0x00 && rx_buf[i] != 0xFF) {
-				LOG_INF("  [%d] = 0x%02X (binary: %d%d%d%d%d%d%d%d)",
-					i, rx_buf[i],
-					(rx_buf[i] >> 7) & 1, (rx_buf[i] >> 6) & 1,
-					(rx_buf[i] >> 5) & 1, (rx_buf[i] >> 4) & 1,
-					(rx_buf[i] >> 3) & 1, (rx_buf[i] >> 2) & 1,
-					(rx_buf[i] >> 1) & 1, rx_buf[i] & 1);
-			}
-		}
-		LOG_WRN("These partial bytes suggest timing/sync issues between master and slave");
-	}
-
+done:
 	k_mutex_unlock(&data->lock);
+	return ret;
+}
 
-	LOG_INF("");
-	LOG_WRN("=== DIAGNOSTIC COMPLETE - No valid response from slave ===");
-	LOG_WRN("");
-	if (count_ff > count_00) {
-		LOG_WRN("MISO is mostly HIGH (0xFF) - slave TX buffer has 0xFF (idle)");
-		LOG_WRN("The STM32 is NOT loading its response into the TX buffer");
-	} else if (count_00 > count_ff) {
-		LOG_WRN("MISO is mostly LOW (0x00) - slave TX buffer empty or MISO stuck");
-	} else {
-		LOG_WRN("Mixed 0x00/0xFF - possible electrical/timing issues");
+/*
+ * High-level API functions
+ */
+
+int argos_spi_get_sn(const struct device *dev, char *sn, size_t *sn_len)
+{
+	uint8_t status;
+	int ret;
+
+	if (!sn || !sn_len || *sn_len == 0) {
+		return -EINVAL;
 	}
-	LOG_WRN("");
-	LOG_WRN("STM32 firmware must prepare response BEFORE master clocks it out:");
-	LOG_WRN("  1. Receive cmd in RX interrupt/DMA callback");
-	LOG_WRN("  2. Parse command and prepare response");
-	LOG_WRN("  3. Load response into TX buffer");
-	LOG_WRN("  4. Call HAL_SPI_TransmitReceive_IT() with response buffer");
-	LOG_WRN("  5. Wait for master to start next transaction");
 
-	return -ENODEV;
+	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_READ_SN, NULL, 0,
+				 (uint8_t *)sn, sn_len, &status);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (status != ARGOS_SPI_RSP_OK) {
+		LOG_ERR("GET_SN failed: status 0x%02X", status);
+		return -EIO;
+	}
+
+	/* Null-terminate the string */
+	if (*sn_len < 32) {
+		sn[*sn_len] = '\0';
+	}
+
+	LOG_DBG("SN: %s (len=%zu)", sn, *sn_len);
+	return 0;
+}
+
+int argos_spi_get_id(const struct device *dev, uint8_t *id, size_t *id_len)
+{
+	uint8_t status;
+	int ret;
+
+	if (!id || !id_len || *id_len == 0) {
+		return -EINVAL;
+	}
+
+	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_READ_ID, NULL, 0,
+				 id, id_len, &status);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (status != ARGOS_SPI_RSP_OK) {
+		LOG_ERR("GET_ID failed: status 0x%02X", status);
+		return -EIO;
+	}
+
+	LOG_DBG("ID: %02X %02X %02X %02X (len=%zu)",
+		id[0], id[1], id[2], id[3], *id_len);
+	return 0;
+}
+
+int argos_spi_set_id(const struct device *dev, const uint8_t *id, size_t id_len)
+{
+	uint8_t status;
+	int ret;
+
+	if (!id || id_len == 0) {
+		return -EINVAL;
+	}
+
+	/* Use longer delay for flash write operations */
+	ret = argos_spi_transact_internal(dev, ARGOS_SPI_CMD_WRITE_ID, id, id_len,
+					  NULL, NULL, &status,
+					  ARGOS_SPI_FLASH_DELAY_MS);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (status != ARGOS_SPI_RSP_OK) {
+		LOG_ERR("SET_ID failed: status 0x%02X", status);
+		return -EIO;
+	}
+
+	LOG_DBG("ID set successfully");
+	return 0;
+}
+
+int argos_spi_get_addr(const struct device *dev, uint8_t *addr, size_t *addr_len)
+{
+	uint8_t status;
+	int ret;
+
+	if (!addr || !addr_len || *addr_len == 0) {
+		return -EINVAL;
+	}
+
+	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_READ_ADDR, NULL, 0,
+				 addr, addr_len, &status);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (status != ARGOS_SPI_RSP_OK) {
+		LOG_ERR("GET_ADDR failed: status 0x%02X", status);
+		return -EIO;
+	}
+
+	LOG_DBG("ADDR: %02X %02X %02X %02X (len=%zu)",
+		addr[0], addr[1], addr[2], addr[3], *addr_len);
+	return 0;
+}
+
+int argos_spi_set_addr(const struct device *dev, const uint8_t *addr, size_t addr_len)
+{
+	uint8_t status;
+	int ret;
+
+	if (!addr || addr_len == 0) {
+		return -EINVAL;
+	}
+
+	/* Use longer delay for flash write operations */
+	ret = argos_spi_transact_internal(dev, ARGOS_SPI_CMD_WRITE_ADDR, addr, addr_len,
+					  NULL, NULL, &status,
+					  ARGOS_SPI_FLASH_DELAY_MS);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (status != ARGOS_SPI_RSP_OK) {
+		LOG_ERR("SET_ADDR failed: status 0x%02X", status);
+		return -EIO;
+	}
+
+	LOG_DBG("ADDR set successfully");
+	return 0;
+}
+
+int argos_spi_get_rconf(const struct device *dev, uint8_t *rconf, size_t *rconf_len)
+{
+	uint8_t status;
+	int ret;
+
+	if (!rconf || !rconf_len || *rconf_len == 0) {
+		return -EINVAL;
+	}
+
+	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_READ_RCONF, NULL, 0,
+				 rconf, rconf_len, &status);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (status != ARGOS_SPI_RSP_OK) {
+		LOG_WRN("GET_RCONF status: 0x%02X", status);
+		/* Don't fail - some devices return non-OK for unconfigured */
+	}
+
+	LOG_DBG("RCONF received (len=%zu)", *rconf_len);
+	return 0;
 }
 
 /* Device tree instantiation macros */
 #define DT_DRV_COMPAT arribada_argos_smd_spi
 
 /* Default SPI frequency if not specified in devicetree */
-#define ARGOS_SPI_DEFAULT_FREQ  1000000
+#define ARGOS_SPI_DEFAULT_FREQ  125000  /* 125 kHz for reliable slave operation */
 
 /* Get SPI max frequency - use property if exists, otherwise default */
 #define ARGOS_SPI_FREQ(inst) \
 	DT_PROP_OR(DT_DRV_INST(inst), spi_max_frequency, ARGOS_SPI_DEFAULT_FREQ)
+
+/*
+ * Get CS GPIO from parent SPI bus node.
+ * The cs-gpios is defined on the SPI bus (e.g., &spi1).
+ * We use index 0 since only one argos-smd device per SPI bus is supported.
+ */
+#define ARGOS_SPI_CS_GPIO(inst) \
+	GPIO_DT_SPEC_GET_BY_IDX(DT_INST_BUS(inst), cs_gpios, 0)
 
 #define ARGOS_SPI_INIT(inst)                                                    \
 	static struct argos_spi_data argos_spi_data_##inst;                     \
@@ -878,8 +828,7 @@ int argos_spi_diagnostic(const struct device *dev)
 					   | SPI_OP_MODE_MASTER,                \
 				.slave = DT_INST_REG_ADDR(inst),                \
 				.cs = {                                         \
-					.gpio = SPI_CS_GPIOS_DT_SPEC_GET(       \
-						DT_INST_BUS(inst)),             \
+					.gpio = ARGOS_SPI_CS_GPIO(inst),        \
 					.delay = 0,                             \
 				},                                              \
 			},                                                      \

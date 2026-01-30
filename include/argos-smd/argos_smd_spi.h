@@ -49,9 +49,21 @@ extern "C" {
 #define ARGOS_SPI_TIMEOUT_MS      5000
 
 /*
+ * Pipelined Protocol Constants
+ * Each SPI transaction is fixed 64 bytes (full-duplex)
+ * Master sends command, receives response to PREVIOUS command
+ * For immediate response, send CMD then NOP
+ */
+#define ARGOS_SPI_TRANSACTION_SIZE    64    /* Fixed transaction size */
+#define ARGOS_SPI_IDLE_PATTERN        0xAA  /* Idle byte pattern from slave */
+#define ARGOS_SPI_PIPELINE_DELAY_MS   5     /* Delay for fast commands (ms) */
+#define ARGOS_SPI_FLASH_DELAY_MS      150   /* Delay for flash write commands (ms) */
+
+/*
  * Application Commands (0x00-0x2A)
  */
-#define ARGOS_SPI_CMD_NONE              0x00  /* Unknown command */
+#define ARGOS_SPI_CMD_NOP               0x00  /* No operation (get previous response) */
+#define ARGOS_SPI_CMD_NONE              0x00  /* Alias for CMD_NOP */
 #define ARGOS_SPI_CMD_READ              0x01  /* Generic read */
 #define ARGOS_SPI_CMD_PING              0x02  /* Ping */
 #define ARGOS_SPI_CMD_MAC_STATUS        0x03  /* MAC status */
@@ -188,8 +200,8 @@ struct argos_spi_config {
  */
 struct argos_spi_data {
 	uint8_t seq_num;                 /* Current sequence number */
-	uint8_t tx_buf[ARGOS_SPI_MAX_FRAME_SIZE];
-	uint8_t rx_buf[ARGOS_SPI_MAX_FRAME_SIZE];
+	uint8_t tx_buf[ARGOS_SPI_TRANSACTION_SIZE];
+	uint8_t rx_buf[ARGOS_SPI_TRANSACTION_SIZE];
 	struct k_mutex lock;
 };
 
@@ -325,6 +337,71 @@ int argos_spi_transact_raw(const struct device *dev, uint8_t cmd,
  */
 int argos_spi_send_only_raw(const struct device *dev, uint8_t cmd,
 			    const uint8_t *tx_data, size_t tx_len);
+
+/*
+ * High-level API functions (like UART driver)
+ * These wrap the low-level SPI protocol details.
+ */
+
+/**
+ * @brief Get device serial number
+ *
+ * @param dev Pointer to device structure
+ * @param sn Buffer to receive serial number string (null-terminated)
+ * @param sn_len Pointer to buffer size, updated with actual length
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_sn(const struct device *dev, char *sn, size_t *sn_len);
+
+/**
+ * @brief Get device ID
+ *
+ * @param dev Pointer to device structure
+ * @param id Buffer to receive device ID (4 bytes)
+ * @param id_len Pointer to buffer size, updated with actual length
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_id(const struct device *dev, uint8_t *id, size_t *id_len);
+
+/**
+ * @brief Set device ID
+ *
+ * @param dev Pointer to device structure
+ * @param id Device ID to set (4 bytes)
+ * @param id_len Length of ID data
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_set_id(const struct device *dev, const uint8_t *id, size_t id_len);
+
+/**
+ * @brief Get device address
+ *
+ * @param dev Pointer to device structure
+ * @param addr Buffer to receive address (4 bytes)
+ * @param addr_len Pointer to buffer size, updated with actual length
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_addr(const struct device *dev, uint8_t *addr, size_t *addr_len);
+
+/**
+ * @brief Set device address
+ *
+ * @param dev Pointer to device structure
+ * @param addr Address to set (4 bytes)
+ * @param addr_len Length of address data
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_set_addr(const struct device *dev, const uint8_t *addr, size_t addr_len);
+
+/**
+ * @brief Get radio configuration
+ *
+ * @param dev Pointer to device structure
+ * @param rconf Buffer to receive radio config
+ * @param rconf_len Pointer to buffer size, updated with actual length
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_rconf(const struct device *dev, uint8_t *rconf, size_t *rconf_len);
 
 #ifdef __cplusplus
 }
