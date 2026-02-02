@@ -2,10 +2,19 @@
  * Copyright (c) 2025 Arribada Initiative
  *
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Argos SMD DFU over SPI - Protocol A+ Implementation
+ *
+ * Protocol A+ Frame Format:
+ * Request:  [0xAA][SEQ][CMD][LEN][DATA...][CRC8]
+ * Response: [0x55][SEQ][STATUS][LEN][DATA...][CRC8]
+ *
+ * The response arrives in the NEXT SPI transaction!
  */
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
+#include <zephyr/drivers/spi.h>
 #include <zephyr/logging/log.h>
 #include <string.h>
 #include <errno.h>
@@ -14,6 +23,41 @@
 #include <argos-smd/argos_smd_dfu_spi.h>
 
 LOG_MODULE_REGISTER(argos_smd_dfu_spi, CONFIG_ARGOS_SMD_DFU_LOG_LEVEL);
+
+/* Protocol A+ Magic bytes */
+#define DFU_MAGIC_REQUEST     0xAA
+#define DFU_MAGIC_RESPONSE    0x55
+#define DFU_IDLE_PATTERN      0xAA
+
+/* Maximum frame sizes */
+#define DFU_MAX_PAYLOAD       250
+#define DFU_HEADER_SIZE       4    /* magic + seq + cmd/status + len */
+#define DFU_CRC_SIZE          1
+#define DFU_MAX_FRAME_SIZE    (DFU_HEADER_SIZE + DFU_MAX_PAYLOAD + DFU_CRC_SIZE)
+
+/* Transaction buffer size (use 64 bytes for short commands, larger for data) */
+#define DFU_TRANSACTION_SIZE  64
+#define DFU_LARGE_TX_SIZE     280
+
+/* Static sequence number for DFU session */
+static uint8_t dfu_seq_num = 0;
+
+/**
+ * @brief Calculate CRC-8 CCITT checksum (polynomial 0x07)
+ */
+static uint8_t crc8_ccitt(const uint8_t *data, uint16_t len)
+{
+	uint8_t crc = 0x00;
+
+	for (uint16_t i = 0; i < len; i++) {
+		crc ^= data[i];
+		for (uint8_t bit = 0; bit < 8; bit++) {
+			crc = (crc & 0x80) ? ((crc << 1) ^ 0x07) : (crc << 1);
+		}
+	}
+
+	return crc;
+}
 
 /* CRC32 calculation using standard polynomial (same as UART DFU) */
 uint32_t argos_dfu_crc32(const uint8_t *data, size_t len)
@@ -28,6 +72,229 @@ uint32_t argos_dfu_crc32(const uint8_t *data, size_t len)
 	}
 
 	return ~crc;
+}
+
+/**
+ * @brief Low-level SPI transceive wrapper
+ */
+static int spi_transceive_dfu(const struct device *dev,
+			      uint8_t *tx_buf, uint8_t *rx_buf, size_t len)
+{
+	const struct argos_spi_config *cfg = dev->config;
+
+	struct spi_buf spi_tx = { .buf = tx_buf, .len = len };
+	struct spi_buf spi_rx = { .buf = rx_buf, .len = len };
+	struct spi_buf_set tx_set = { .buffers = &spi_tx, .count = 1 };
+	struct spi_buf_set rx_set = { .buffers = &spi_rx, .count = 1 };
+
+	return spi_transceive_dt(&cfg->spi, &tx_set, &rx_set);
+}
+
+/**
+ * @brief Build and send a Protocol A+ command, then read response
+ *
+ * Protocol A+ uses a two-transaction model:
+ * 1. Transaction 1: Send [0xAA][SEQ][CMD][LEN][DATA][CRC8]
+ *    - RX during this transaction contains idle pattern (ignore)
+ * 2. Wait the appropriate delay for the command
+ * 3. Transaction 2: Send idle pattern [0xAA][0xAA]...
+ *    - RX contains response: [0x55][SEQ][STATUS][LEN][DATA][CRC8]
+ *
+ * @param dev Device structure
+ * @param cmd Command byte (0x30-0x3C)
+ * @param payload TX payload (can be NULL if payload_len is 0)
+ * @param payload_len Payload length (0-250)
+ * @param response Buffer to store response data (can be NULL)
+ * @param resp_len Pointer to response length (in: max size, out: actual size)
+ * @param delay_ms Delay between TX and RX transactions
+ * @return Status code (0x00 = OK) or negative errno on failure
+ */
+static int dfu_send_cmd(const struct device *dev, uint8_t cmd,
+			const uint8_t *payload, uint8_t payload_len,
+			uint8_t *response, uint8_t *resp_len, uint32_t delay_ms)
+{
+	struct argos_spi_data *data = dev->data;
+	uint8_t tx_buf[DFU_LARGE_TX_SIZE];
+	uint8_t rx_buf[DFU_LARGE_TX_SIZE];
+	uint16_t idx = 0;
+	int ret;
+
+	if (payload_len > DFU_MAX_PAYLOAD) {
+		LOG_ERR("Payload too large: %u", payload_len);
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&data->lock, K_FOREVER);
+
+	/* ═══════════════════════════════════════════════════════════════
+	 * Step 1: Build Protocol A+ request frame
+	 * Format: [0xAA][SEQ][CMD][LEN][DATA...][CRC8]
+	 * ═══════════════════════════════════════════════════════════════ */
+	tx_buf[idx++] = DFU_MAGIC_REQUEST;     /* Magic */
+	tx_buf[idx++] = dfu_seq_num;           /* Sequence number */
+	tx_buf[idx++] = cmd;                   /* Command */
+	tx_buf[idx++] = payload_len;           /* Length */
+
+	if (payload && payload_len > 0) {
+		memcpy(&tx_buf[idx], payload, payload_len);
+		idx += payload_len;
+	}
+
+	/* CRC calculated over: magic + seq + cmd + len + data */
+	tx_buf[idx] = crc8_ccitt(tx_buf, idx);
+	idx++;
+
+	/* Pad to transaction size */
+	size_t tx_size = (idx < DFU_TRANSACTION_SIZE) ? DFU_TRANSACTION_SIZE : idx;
+	if (idx < tx_size) {
+		memset(&tx_buf[idx], DFU_IDLE_PATTERN, tx_size - idx);
+	}
+
+	LOG_DBG("TX[cmd=0x%02X seq=%u len=%u]: %02X %02X %02X %02X %02X ...",
+		cmd, dfu_seq_num, payload_len,
+		tx_buf[0], tx_buf[1], tx_buf[2], tx_buf[3], tx_buf[4]);
+
+	/* ═══════════════════════════════════════════════════════════════
+	 * Step 2: Transaction 1 - Send command
+	 * (RX contains idle pattern, ignore it)
+	 * ═══════════════════════════════════════════════════════════════ */
+	memset(rx_buf, 0, sizeof(rx_buf));
+	ret = spi_transceive_dfu(dev, tx_buf, rx_buf, tx_size);
+	if (ret < 0) {
+		LOG_ERR("SPI TX failed: %d", ret);
+		k_mutex_unlock(&data->lock);
+		return ret;
+	}
+
+	LOG_DBG("RX1 (idle): %02X %02X %02X %02X",
+		rx_buf[0], rx_buf[1], rx_buf[2], rx_buf[3]);
+
+	/* ═══════════════════════════════════════════════════════════════
+	 * Step 3: Wait for slave to process command
+	 * ═══════════════════════════════════════════════════════════════ */
+	k_msleep(delay_ms);
+
+	/* ═══════════════════════════════════════════════════════════════
+	 * Step 4: Transaction 2 - Send idle pattern to read response
+	 * ═══════════════════════════════════════════════════════════════ */
+	memset(tx_buf, DFU_IDLE_PATTERN, DFU_TRANSACTION_SIZE);
+	memset(rx_buf, 0, sizeof(rx_buf));
+	ret = spi_transceive_dfu(dev, tx_buf, rx_buf, DFU_TRANSACTION_SIZE);
+	if (ret < 0) {
+		LOG_ERR("SPI RX failed: %d", ret);
+		k_mutex_unlock(&data->lock);
+		return ret;
+	}
+
+	LOG_DBG("RX2: %02X %02X %02X %02X %02X %02X %02X %02X",
+		rx_buf[0], rx_buf[1], rx_buf[2], rx_buf[3],
+		rx_buf[4], rx_buf[5], rx_buf[6], rx_buf[7]);
+
+	/* ═══════════════════════════════════════════════════════════════
+	 * Step 5: Parse response frame
+	 * Format: [0x55][SEQ][STATUS][LEN][DATA...][CRC8]
+	 * ═══════════════════════════════════════════════════════════════ */
+
+	/* Find response magic (skip any idle bytes) */
+	size_t offset = 0;
+	while (offset < DFU_TRANSACTION_SIZE &&
+	       rx_buf[offset] != DFU_MAGIC_RESPONSE) {
+		if (rx_buf[offset] != DFU_IDLE_PATTERN && rx_buf[offset] != 0xFF) {
+			LOG_WRN("Unexpected byte 0x%02X at offset %zu", rx_buf[offset], offset);
+		}
+		offset++;
+	}
+
+	if (offset >= DFU_TRANSACTION_SIZE || rx_buf[offset] != DFU_MAGIC_RESPONSE) {
+		LOG_ERR("No response magic (0x55) found");
+		k_mutex_unlock(&data->lock);
+		return -ENODATA;
+	}
+
+	/* Parse response header */
+	uint8_t rsp_magic = rx_buf[offset];
+	uint8_t rsp_seq = rx_buf[offset + 1];
+	uint8_t rsp_status = rx_buf[offset + 2];
+	uint8_t rsp_len = rx_buf[offset + 3];
+
+	(void)rsp_magic;  /* Verified above */
+	(void)rsp_seq;    /* Could verify matches dfu_seq_num */
+
+	LOG_DBG("Response: magic=0x%02X seq=%u status=0x%02X len=%u",
+		rsp_magic, rsp_seq, rsp_status, rsp_len);
+
+	/* Validate response length */
+	if (rsp_len > DFU_MAX_PAYLOAD) {
+		LOG_ERR("Response payload too large: %u", rsp_len);
+		k_mutex_unlock(&data->lock);
+		return -EMSGSIZE;
+	}
+
+	/* Verify CRC */
+	size_t frame_len = DFU_HEADER_SIZE + rsp_len;
+	uint8_t expected_crc = crc8_ccitt(&rx_buf[offset], frame_len);
+	uint8_t received_crc = rx_buf[offset + frame_len];
+
+	if (expected_crc != received_crc) {
+		LOG_ERR("CRC mismatch: calc=0x%02X recv=0x%02X", expected_crc, received_crc);
+		k_mutex_unlock(&data->lock);
+		return -EILSEQ;
+	}
+
+	/* Copy response data */
+	if (response && rsp_len > 0) {
+		size_t copy_len = resp_len ? MIN(rsp_len, *resp_len) : rsp_len;
+		memcpy(response, &rx_buf[offset + 4], copy_len);
+	}
+	if (resp_len) {
+		*resp_len = rsp_len;
+	}
+
+	/* Increment sequence number for next command */
+	dfu_seq_num++;
+
+	k_mutex_unlock(&data->lock);
+
+	return rsp_status;  /* 0x00 = OK */
+}
+
+/**
+ * @brief Send command with automatic retry on recoverable errors
+ *
+ * Uses argos_is_recoverable() to determine if error should trigger retry.
+ * Recoverable errors: PROT_BUSY (0x06) and PROT_FRAME_CRC_ERROR (0x10)
+ */
+static int dfu_send_with_retry(const struct device *dev, uint8_t cmd,
+			       const uint8_t *payload, uint8_t payload_len,
+			       uint8_t *response, uint8_t *resp_len,
+			       uint32_t delay_ms)
+{
+	for (int retry = 0; retry < ARGOS_DFU_MAX_RETRIES; retry++) {
+		int ret = dfu_send_cmd(dev, cmd, payload, payload_len,
+				       response, resp_len, delay_ms);
+
+		if (ret == PROT_OK) {
+			return 0;  /* Success */
+		}
+
+		/* Check for recoverable errors using unified helper */
+		if (argos_is_recoverable((uint8_t)ret) || ret == -EILSEQ) {
+			LOG_WRN("Recoverable error (0x%02X), retry %d/%d",
+				ret, retry + 1, ARGOS_DFU_MAX_RETRIES);
+			k_msleep(50);
+			continue;
+		}
+
+		/* Non-recoverable error - return immediately */
+		if (ret < 0) {
+			return ret;
+		}
+
+		/* Non-OK status that's not recoverable - return the status */
+		return ret;
+	}
+
+	return -ETIMEDOUT;
 }
 
 int argos_dfu_enter(const struct device *dev)
@@ -51,6 +318,9 @@ int argos_dfu_enter(const struct device *dev)
 
 	LOG_INF("DFU enter acknowledged, device will reset to bootloader");
 
+	/* Reset DFU sequence number for new session */
+	dfu_seq_num = 0;
+
 	/* Wait for device to reset */
 	k_msleep(ARGOS_DFU_RESET_WAIT_MS);
 
@@ -59,27 +329,27 @@ int argos_dfu_enter(const struct device *dev)
 
 int argos_dfu_ping(const struct device *dev)
 {
-	uint8_t status;
-	uint8_t rx_data[16];
-	size_t rx_len = sizeof(rx_data);
+	uint8_t resp[16];
+	uint8_t resp_len = sizeof(resp);
 	int ret;
 
-	LOG_DBG("Pinging DFU bootloader (RAW mode)...");
+	LOG_DBG("Pinging DFU bootloader...");
 
-	/* Use RAW transaction - bootloader expects no Protocol A+ framing */
-	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_PING, NULL, 0,
-				     rx_data, &rx_len, &status);
+	ret = dfu_send_cmd(dev, ARGOS_SPI_DFU_CMD_PING, NULL, 0,
+			   resp, &resp_len, ARGOS_DFU_DELAY_PING_MS);
 	if (ret < 0) {
 		return ret;
 	}
 
-	if (status != ARGOS_DFU_RSP_OK) {
-		LOG_ERR("DFU ping failed: status 0x%02X", status);
+	if (ret != PROT_OK) {
+		LOG_ERR("DFU ping failed: status 0x%02X", ret);
 		return -EIO;
 	}
 
-	if (rx_len >= 3) {
-		LOG_INF("Bootloader version: %u.%u.%u", rx_data[0], rx_data[1], rx_data[2]);
+	if (resp_len > 0) {
+		/* Response contains version string (e.g., "BL_V1.0.0") */
+		resp[MIN(resp_len, sizeof(resp) - 1)] = '\0';
+		LOG_INF("Bootloader: %s", resp);
 	}
 
 	return 0;
@@ -108,46 +378,45 @@ int argos_dfu_wait_ready(const struct device *dev, k_timeout_t timeout)
 
 int argos_dfu_get_info(const struct device *dev, struct argos_bl_info *info)
 {
-	uint8_t status;
-	uint8_t rx_data[32];
-	size_t rx_len = sizeof(rx_data);
+	uint8_t resp[32];
+	uint8_t resp_len = sizeof(resp);
 	int ret;
 
 	if (!info) {
 		return -EINVAL;
 	}
 
-	LOG_DBG("Getting bootloader info (RAW mode)...");
+	LOG_DBG("Getting bootloader info...");
 
-	/* Use RAW transaction - bootloader expects no Protocol A+ framing */
-	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_GET_INFO, NULL, 0,
-				     rx_data, &rx_len, &status);
+	ret = dfu_send_cmd(dev, ARGOS_SPI_DFU_CMD_GET_INFO, NULL, 0,
+			   resp, &resp_len, ARGOS_DFU_DELAY_GET_INFO_MS);
 	if (ret < 0) {
 		return ret;
 	}
 
-	if (status != ARGOS_DFU_RSP_OK) {
-		LOG_ERR("Get info failed: status 0x%02X", status);
+	if (ret != PROT_OK) {
+		LOG_ERR("Get info failed: status 0x%02X", ret);
 		return -EIO;
 	}
 
-	/* Parse response */
-	if (rx_len >= 15) {
-		info->version_major = rx_data[0];
-		info->version_minor = rx_data[1];
-		info->version_patch = rx_data[2];
-		info->app_start_addr = (rx_data[3] << 24) | (rx_data[4] << 16) |
-				       (rx_data[5] << 8) | rx_data[6];
-		info->app_max_size = (rx_data[7] << 24) | (rx_data[8] << 16) |
-				     (rx_data[9] << 8) | rx_data[10];
-		info->page_size = (rx_data[11] << 24) | (rx_data[12] << 16) |
-				  (rx_data[13] << 8) | rx_data[14];
+	/* Parse response (17 bytes expected) */
+	if (resp_len >= 15) {
+		info->version_major = resp[0];
+		info->version_minor = resp[1];
+		info->version_patch = resp[2];
+		/* Little-endian parsing */
+		info->app_start_addr = resp[3] | (resp[4] << 8) |
+				       (resp[5] << 16) | (resp[6] << 24);
+		info->app_max_size = resp[7] | (resp[8] << 8) |
+				     (resp[9] << 16) | (resp[10] << 24);
+		info->page_size = resp[11] | (resp[12] << 8) |
+				  (resp[13] << 16) | (resp[14] << 24);
 
 		LOG_INF("Bootloader v%u.%u.%u, app_start=0x%08X, max_size=%u, page_size=%u",
 			info->version_major, info->version_minor, info->version_patch,
 			info->app_start_addr, info->app_max_size, info->page_size);
 	} else {
-		LOG_WRN("Bootloader info response too short: %zu bytes", rx_len);
+		LOG_WRN("Bootloader info response too short: %u bytes", resp_len);
 		memset(info, 0, sizeof(*info));
 	}
 
@@ -156,21 +425,25 @@ int argos_dfu_get_info(const struct device *dev, struct argos_bl_info *info)
 
 int argos_dfu_erase(const struct device *dev)
 {
-	uint8_t status;
+	uint8_t resp[4];
+	uint8_t resp_len = sizeof(resp);
 	int ret;
 
-	LOG_INF("Erasing application flash (this may take a few seconds)...");
+	LOG_INF("Erasing application flash (this takes ~2-3 seconds)...");
 
-	/* Use RAW transaction - bootloader expects no Protocol A+ framing */
-	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_ERASE, NULL, 0,
-				     NULL, NULL, &status);
+	/*
+	 * ERASE command takes ~2-3 seconds to complete.
+	 * We use a long delay before reading the response.
+	 */
+	ret = dfu_send_cmd(dev, ARGOS_SPI_DFU_CMD_ERASE, NULL, 0,
+			   resp, &resp_len, ARGOS_DFU_DELAY_ERASE_MS);
 	if (ret < 0) {
-		LOG_ERR("Erase command failed: %d", ret);
+		LOG_ERR("Erase failed: %d", ret);
 		return ret;
 	}
 
-	if (status != ARGOS_DFU_RSP_OK) {
-		LOG_ERR("Flash erase failed: status 0x%02X", status);
+	if (ret != PROT_OK) {
+		LOG_ERR("Erase failed: status 0x%02X", ret);
 		return -EIO;
 	}
 
@@ -178,11 +451,53 @@ int argos_dfu_erase(const struct device *dev)
 	return 0;
 }
 
-int argos_dfu_write_chunk(const struct device *dev, uint32_t addr,
-			   const uint8_t *data, size_t len)
+int argos_dfu_erase_with_polling(const struct device *dev)
 {
-	uint8_t status;
+	uint8_t resp[4];
+	uint8_t resp_len = sizeof(resp);
+	struct argos_dfu_extended_status status;
+	int ret;
+
+	LOG_INF("Erasing flash with polling...");
+
+	/* Send ERASE command with short initial delay */
+	ret = dfu_send_cmd(dev, ARGOS_SPI_DFU_CMD_ERASE, NULL, 0,
+			   resp, &resp_len, 100);
+
+	/* Poll GET_STATUS every 100ms until complete */
+	for (int i = 0; i < 50; i++) {  /* Max 5 seconds */
+		k_msleep(100);
+
+		ret = argos_dfu_get_extended_status(dev, &status);
+		if (ret != 0) {
+			continue;
+		}
+
+		switch (status.dfu_op_state) {
+		case ARGOS_DFU_OP_ERASING:
+			LOG_DBG("Still erasing...");
+			continue;
+		case ARGOS_DFU_OP_READY:
+		case ARGOS_DFU_OP_IDLE:
+			LOG_INF("Erase complete");
+			return 0;
+		case ARGOS_DFU_OP_ERROR:
+			LOG_ERR("Erase error: 0x%02X", status.last_error);
+			return -EIO;
+		default:
+			continue;
+		}
+	}
+
+	return -ETIMEDOUT;
+}
+
+int argos_dfu_write_chunk(const struct device *dev, uint32_t addr,
+			  const uint8_t *data, size_t len)
+{
 	uint8_t req_data[6];
+	uint8_t resp[4];
+	uint8_t resp_len;
 	int ret;
 
 	if (!data || len == 0 || len > ARGOS_DFU_CHUNK_SIZE) {
@@ -191,44 +506,39 @@ int argos_dfu_write_chunk(const struct device *dev, uint32_t addr,
 
 	LOG_DBG("Writing %zu bytes at 0x%08X", len, addr);
 
-	/* Step 1: Send WRITE_REQ with address and length (RAW mode) */
-	req_data[0] = (addr >> 24) & 0xFF;
-	req_data[1] = (addr >> 16) & 0xFF;
-	req_data[2] = (addr >> 8) & 0xFF;
-	req_data[3] = addr & 0xFF;
-	req_data[4] = (len >> 8) & 0xFF;
-	req_data[5] = len & 0xFF;
+	/* ═══════════════════════════════════════════════════════════════
+	 * Step 1: WRITE_REQ - Send address and length (little-endian)
+	 * Payload: [addr:4B][len:2B]
+	 * ═══════════════════════════════════════════════════════════════ */
+	req_data[0] = addr & 0xFF;
+	req_data[1] = (addr >> 8) & 0xFF;
+	req_data[2] = (addr >> 16) & 0xFF;
+	req_data[3] = (addr >> 24) & 0xFF;
+	req_data[4] = len & 0xFF;
+	req_data[5] = (len >> 8) & 0xFF;
 
-	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_WRITE_REQ, req_data, 6,
-				     NULL, NULL, &status);
-	if (ret < 0) {
-		LOG_ERR("Write request failed: %d", ret);
-		return ret;
+	resp_len = sizeof(resp);
+	ret = dfu_send_with_retry(dev, ARGOS_SPI_DFU_CMD_WRITE_REQ, req_data, 6,
+				  resp, &resp_len, ARGOS_DFU_DELAY_WRITE_REQ_MS);
+	if (ret != 0) {
+		LOG_ERR("WRITE_REQ failed at 0x%08X: %d", addr, ret);
+		return (ret < 0) ? ret : -EIO;
 	}
 
-	if (status != ARGOS_DFU_RSP_OK) {
-		LOG_ERR("Write request rejected: status 0x%02X", status);
-		return -EIO;
-	}
-
-	/* Step 2: Send WRITE_DATA with actual data (RAW mode) */
-	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_WRITE_DATA, data, len,
-				     NULL, NULL, &status);
-	if (ret < 0) {
-		LOG_ERR("Write data failed: %d", ret);
-		return ret;
-	}
-
-	if (status != ARGOS_DFU_RSP_OK) {
-		LOG_ERR("Write data rejected: status 0x%02X", status);
-		if (status == ARGOS_DFU_RSP_FLASH_ERROR) {
+	/* ═══════════════════════════════════════════════════════════════
+	 * Step 2: WRITE_DATA - Send actual data
+	 * ═══════════════════════════════════════════════════════════════ */
+	resp_len = sizeof(resp);
+	ret = dfu_send_with_retry(dev, ARGOS_SPI_DFU_CMD_WRITE_DATA, data, len,
+				  resp, &resp_len, ARGOS_DFU_DELAY_WRITE_DATA_MS);
+	if (ret != 0) {
+		LOG_ERR("WRITE_DATA failed at 0x%08X: %d", addr, ret);
+		if (ret == PROT_FLASH_ERROR) {
 			return -EIO;
-		} else if (status == ARGOS_DFU_RSP_ADDR_ERROR) {
+		} else if (ret == PROT_ADDR_ERROR) {
 			return -EFAULT;
-		} else if (status == ARGOS_DFU_RSP_SIZE_ERROR) {
-			return -EINVAL;
 		}
-		return -EIO;
+		return (ret < 0) ? ret : -EIO;
 	}
 
 	return 0;
@@ -236,9 +546,9 @@ int argos_dfu_write_chunk(const struct device *dev, uint32_t addr,
 
 int argos_dfu_read(const struct device *dev, uint32_t addr, uint8_t *data, size_t len)
 {
-	uint8_t status;
 	uint8_t req_data[6];
-	size_t rx_len;
+	uint8_t resp[4];
+	uint8_t resp_len;
 	int ret;
 
 	if (!data || len == 0 || len > ARGOS_SPI_MAX_PAYLOAD) {
@@ -247,36 +557,33 @@ int argos_dfu_read(const struct device *dev, uint32_t addr, uint8_t *data, size_
 
 	LOG_DBG("Reading %zu bytes from 0x%08X", len, addr);
 
-	/* Step 1: Send READ_REQ with address and length (RAW mode) */
-	req_data[0] = (addr >> 24) & 0xFF;
-	req_data[1] = (addr >> 16) & 0xFF;
-	req_data[2] = (addr >> 8) & 0xFF;
-	req_data[3] = addr & 0xFF;
-	req_data[4] = (len >> 8) & 0xFF;
-	req_data[5] = len & 0xFF;
+	/* ═══════════════════════════════════════════════════════════════
+	 * Step 1: READ_REQ - Send address and length (little-endian)
+	 * ═══════════════════════════════════════════════════════════════ */
+	req_data[0] = addr & 0xFF;
+	req_data[1] = (addr >> 8) & 0xFF;
+	req_data[2] = (addr >> 16) & 0xFF;
+	req_data[3] = (addr >> 24) & 0xFF;
+	req_data[4] = len & 0xFF;
+	req_data[5] = (len >> 8) & 0xFF;
 
-	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_READ_REQ, req_data, 6,
-				     NULL, NULL, &status);
-	if (ret < 0) {
-		return ret;
+	resp_len = sizeof(resp);
+	ret = dfu_send_with_retry(dev, ARGOS_SPI_DFU_CMD_READ_REQ, req_data, 6,
+				  resp, &resp_len, ARGOS_DFU_DELAY_READ_REQ_MS);
+	if (ret != 0) {
+		LOG_ERR("READ_REQ failed: %d", ret);
+		return (ret < 0) ? ret : -EIO;
 	}
 
-	if (status != ARGOS_DFU_RSP_OK) {
-		LOG_ERR("Read request rejected: status 0x%02X", status);
-		return -EIO;
-	}
-
-	/* Step 2: Send READ_DATA to get the data (RAW mode) */
-	rx_len = len;
-	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_READ_DATA, NULL, 0,
-				     data, &rx_len, &status);
-	if (ret < 0) {
-		return ret;
-	}
-
-	if (status != ARGOS_DFU_RSP_OK) {
-		LOG_ERR("Read data failed: status 0x%02X", status);
-		return -EIO;
+	/* ═══════════════════════════════════════════════════════════════
+	 * Step 2: READ_DATA - Read the data
+	 * ═══════════════════════════════════════════════════════════════ */
+	resp_len = len;
+	ret = dfu_send_with_retry(dev, ARGOS_SPI_DFU_CMD_READ_DATA, NULL, 0,
+				  data, &resp_len, ARGOS_DFU_DELAY_READ_DATA_MS);
+	if (ret != 0) {
+		LOG_ERR("READ_DATA failed: %d", ret);
+		return (ret < 0) ? ret : -EIO;
 	}
 
 	return 0;
@@ -284,49 +591,51 @@ int argos_dfu_read(const struct device *dev, uint32_t addr, uint8_t *data, size_
 
 int argos_dfu_verify(const struct device *dev, uint32_t crc32)
 {
-	uint8_t status;
 	uint8_t crc_data[4];
+	uint8_t resp[4];
+	uint8_t resp_len = sizeof(resp);
 	int ret;
 
 	LOG_INF("Verifying firmware CRC32: 0x%08X", crc32);
 
-	/* Send CRC32 in big-endian format (RAW mode) */
-	crc_data[0] = (crc32 >> 24) & 0xFF;
-	crc_data[1] = (crc32 >> 16) & 0xFF;
-	crc_data[2] = (crc32 >> 8) & 0xFF;
-	crc_data[3] = crc32 & 0xFF;
+	/* Send CRC32 in little-endian format */
+	crc_data[0] = crc32 & 0xFF;
+	crc_data[1] = (crc32 >> 8) & 0xFF;
+	crc_data[2] = (crc32 >> 16) & 0xFF;
+	crc_data[3] = (crc32 >> 24) & 0xFF;
 
-	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_VERIFY, crc_data, 4,
-				     NULL, NULL, &status);
+	ret = dfu_send_cmd(dev, ARGOS_SPI_DFU_CMD_VERIFY, crc_data, 4,
+			   resp, &resp_len, ARGOS_DFU_DELAY_VERIFY_MS);
 	if (ret < 0) {
 		LOG_ERR("Verify command failed: %d", ret);
 		return ret;
 	}
 
-	if (status == ARGOS_DFU_RSP_OK) {
+	if (ret == PROT_OK) {
 		LOG_INF("CRC verification passed!");
 		return 0;
-	} else if (status == ARGOS_DFU_RSP_CRC_ERROR ||
-		   status == ARGOS_DFU_RSP_VERIFY_ERROR) {
+	} else if (ret == PROT_CRC_ERROR || ret == PROT_VERIFY_ERROR) {
 		LOG_ERR("CRC verification failed - mismatch");
 		return -EILSEQ;
 	} else {
-		LOG_ERR("Verify failed: status 0x%02X", status);
+		LOG_ERR("Verify failed: status 0x%02X", ret);
 		return -EIO;
 	}
 }
 
 int argos_dfu_reset(const struct device *dev)
 {
+	uint8_t resp[4];
+	uint8_t resp_len = sizeof(resp);
 	int ret;
 
 	LOG_INF("Resetting device...");
 
-	/* Reset command - no response expected (RAW mode) */
-	ret = argos_spi_send_only_raw(dev, ARGOS_SPI_DFU_CMD_RESET, NULL, 0);
-	if (ret < 0) {
-		LOG_ERR("Reset command failed: %d", ret);
-		return ret;
+	ret = dfu_send_cmd(dev, ARGOS_SPI_DFU_CMD_RESET, NULL, 0,
+			   resp, &resp_len, ARGOS_DFU_DELAY_RESET_MS);
+	/* Device may not respond after reset - that's OK */
+	if (ret < 0 && ret != -ENODATA) {
+		LOG_WRN("Reset response: %d (device may have reset)", ret);
 	}
 
 	/* Wait for reset to complete */
@@ -337,15 +646,17 @@ int argos_dfu_reset(const struct device *dev)
 
 int argos_dfu_jump(const struct device *dev)
 {
+	uint8_t resp[4];
+	uint8_t resp_len = sizeof(resp);
 	int ret;
 
 	LOG_INF("Jumping to application...");
 
-	/* Jump command - device will reset to application (RAW mode) */
-	ret = argos_spi_send_only_raw(dev, ARGOS_SPI_DFU_CMD_JUMP, NULL, 0);
-	if (ret < 0) {
-		LOG_ERR("Jump command failed: %d", ret);
-		return ret;
+	ret = dfu_send_cmd(dev, ARGOS_SPI_DFU_CMD_JUMP, NULL, 0,
+			   resp, &resp_len, ARGOS_DFU_DELAY_JUMP_MS);
+	/* Device may not respond after jump - that's OK */
+	if (ret < 0 && ret != -ENODATA) {
+		LOG_WRN("Jump response: %d (device may have jumped)", ret);
 	}
 
 	/* Wait for jump/reset to complete */
@@ -354,59 +665,108 @@ int argos_dfu_jump(const struct device *dev)
 	return 0;
 }
 
+int argos_dfu_get_extended_status(const struct device *dev,
+				  struct argos_dfu_extended_status *status)
+{
+	uint8_t resp[32];
+	uint8_t resp_len = sizeof(resp);
+	int ret;
+
+	if (!status) {
+		return -EINVAL;
+	}
+
+	ret = dfu_send_cmd(dev, ARGOS_SPI_DFU_CMD_GET_STATUS, NULL, 0,
+			   resp, &resp_len, ARGOS_DFU_DELAY_GET_STATUS_MS);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (ret != PROT_OK) {
+		LOG_ERR("Get extended status failed: 0x%02X", ret);
+		return -EIO;
+	}
+
+	/* Parse 32-byte response */
+	if (resp_len >= 32) {
+		memcpy(status, resp, sizeof(*status));
+	} else if (resp_len > 0) {
+		memset(status, 0, sizeof(*status));
+		memcpy(status, resp, resp_len);
+	} else {
+		memset(status, 0, sizeof(*status));
+	}
+
+	return 0;
+}
+
 int argos_dfu_get_status_spi(const struct device *dev, struct argos_dfu_status *status_out)
 {
-	uint8_t status;
-	uint8_t rx_data[16];
-	size_t rx_len = sizeof(rx_data);
+	struct argos_dfu_extended_status ext_status;
 	int ret;
 
 	if (!status_out) {
 		return -EINVAL;
 	}
 
-	/* Use RAW transaction - bootloader expects no Protocol A+ framing */
-	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_GET_STATUS, NULL, 0,
-				     rx_data, &rx_len, &status);
-	if (ret < 0) {
+	ret = argos_dfu_get_extended_status(dev, &ext_status);
+	if (ret != 0) {
 		return ret;
 	}
 
-	if (status != ARGOS_DFU_RSP_OK) {
-		LOG_ERR("Get status failed: status 0x%02X", status);
-		return -EIO;
+	/* Map extended status to legacy format */
+	switch (ext_status.dfu_op_state) {
+	case ARGOS_DFU_OP_IDLE:
+		status_out->state = ext_status.session_active ?
+				    ARGOS_DFU_STATE_BOOTLOADER : ARGOS_DFU_STATE_IDLE;
+		break;
+	case ARGOS_DFU_OP_ERASING:
+		status_out->state = ARGOS_DFU_STATE_ERASING;
+		break;
+	case ARGOS_DFU_OP_WRITING:
+		status_out->state = ARGOS_DFU_STATE_WRITING;
+		break;
+	case ARGOS_DFU_OP_VERIFYING:
+		status_out->state = ARGOS_DFU_STATE_VERIFYING;
+		break;
+	case ARGOS_DFU_OP_READY:
+		status_out->state = ARGOS_DFU_STATE_BOOTLOADER;
+		break;
+	case ARGOS_DFU_OP_COMPLETE:
+		status_out->state = ARGOS_DFU_STATE_COMPLETE;
+		break;
+	case ARGOS_DFU_OP_ERROR:
+		status_out->state = ARGOS_DFU_STATE_ERROR;
+		break;
+	default:
+		status_out->state = ARGOS_DFU_STATE_IDLE;
+		break;
 	}
 
-	/* Parse response */
-	if (rx_len >= 10) {
-		status_out->state = rx_data[0];
-		status_out->bytes_written = (rx_data[1] << 24) | (rx_data[2] << 16) |
-					    (rx_data[3] << 8) | rx_data[4];
-		status_out->total_bytes = (rx_data[5] << 24) | (rx_data[6] << 16) |
-					  (rx_data[7] << 8) | rx_data[8];
-		status_out->last_error = rx_data[9];
-	}
+	status_out->bytes_written = ext_status.received_bytes;
+	status_out->total_bytes = 0;  /* Not available in extended status */
+	status_out->last_error = ext_status.last_error;
 
 	return 0;
 }
 
 int argos_dfu_abort(const struct device *dev)
 {
-	uint8_t status;
+	uint8_t resp[4];
+	uint8_t resp_len = sizeof(resp);
 	int ret;
 
 	LOG_WRN("Aborting DFU operation...");
 
-	/* Use RAW transaction - bootloader expects no Protocol A+ framing */
-	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_ABORT, NULL, 0,
-				     NULL, NULL, &status);
+	ret = dfu_send_cmd(dev, ARGOS_SPI_DFU_CMD_ABORT, NULL, 0,
+			   resp, &resp_len, ARGOS_DFU_DELAY_ABORT_MS);
 	if (ret < 0) {
 		LOG_ERR("Abort command failed: %d", ret);
 		return ret;
 	}
 
-	if (status != ARGOS_DFU_RSP_OK) {
-		LOG_ERR("Abort failed: status 0x%02X", status);
+	if (ret != PROT_OK) {
+		LOG_ERR("Abort failed: status 0x%02X", ret);
 		return -EIO;
 	}
 
@@ -416,27 +776,22 @@ int argos_dfu_abort(const struct device *dev)
 
 int argos_dfu_set_header(const struct device *dev, const uint8_t *header)
 {
-	uint8_t status;
+	uint8_t resp[4];
+	uint8_t resp_len = sizeof(resp);
 	int ret;
 
 	if (!header) {
 		return -EINVAL;
 	}
 
-	LOG_DBG("Setting application header (%d bytes, RAW mode)", ARGOS_DFU_HEADER_SIZE);
+	LOG_DBG("Setting application header (%d bytes)", ARGOS_DFU_HEADER_SIZE);
 
-	/* Use RAW transaction - bootloader expects no Protocol A+ framing */
-	ret = argos_spi_transact_raw(dev, ARGOS_SPI_DFU_CMD_SET_HEADER,
-				     header, ARGOS_DFU_HEADER_SIZE,
-				     NULL, NULL, &status);
-	if (ret < 0) {
+	ret = dfu_send_with_retry(dev, ARGOS_SPI_DFU_CMD_SET_HEADER,
+				  header, ARGOS_DFU_HEADER_SIZE,
+				  resp, &resp_len, ARGOS_DFU_DELAY_SET_HEADER_MS);
+	if (ret != 0) {
 		LOG_ERR("Set header failed: %d", ret);
-		return ret;
-	}
-
-	if (status != ARGOS_DFU_RSP_OK) {
-		LOG_ERR("Set header rejected: status 0x%02X", status);
-		return -EIO;
+		return (ret < 0) ? ret : -EIO;
 	}
 
 	return 0;
@@ -451,6 +806,7 @@ int argos_spi_firmware_update(const struct device *dev,
 
 	LOG_INF("========================================");
 	LOG_INF("     SPI DFU Update Started");
+	LOG_INF("     (Protocol A+)");
 	LOG_INF("========================================");
 	LOG_INF("Firmware size: %zu bytes", size);
 

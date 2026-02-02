@@ -435,6 +435,85 @@ unlock:
 	return ret;
 }
 
+int argos_spi_transact_raw_timeout(const struct device *dev, uint8_t cmd,
+				   const uint8_t *tx_data, size_t tx_len,
+				   uint8_t *rx_data, size_t *rx_len, uint8_t *status,
+				   uint32_t timeout_ms)
+{
+	const struct argos_spi_config *cfg = dev->config;
+	struct argos_spi_data *data = dev->data;
+	int ret;
+
+	if (tx_len > ARGOS_SPI_MAX_PAYLOAD) {
+		LOG_ERR("TX payload too large: %zu", tx_len);
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&data->lock, K_FOREVER);
+
+	/* Build raw TX frame: [CMD] [PAYLOAD...] padded to 64 bytes */
+	memset(data->tx_buf, 0xFF, ARGOS_SPI_TRANSACTION_SIZE);
+	data->tx_buf[0] = cmd;
+	if (tx_data && tx_len > 0) {
+		memcpy(&data->tx_buf[1], tx_data, tx_len);
+	}
+
+	LOG_DBG("RAW TX (timeout=%ums): cmd=0x%02X, len=%zu", timeout_ms, cmd, tx_len);
+	LOG_HEXDUMP_DBG(data->tx_buf, MIN(16, 1 + tx_len), "RAW TX frame");
+
+	/* Transaction 1: Send command */
+	memset(data->rx_buf, 0, sizeof(data->rx_buf));
+	ret = spi_transaction_64(&cfg->spi, data->tx_buf, data->rx_buf);
+	if (ret < 0) {
+		LOG_ERR("SPI transaction 1 failed: %d", ret);
+		goto unlock;
+	}
+
+	/* Wait for operation to complete (custom timeout for long operations) */
+	k_msleep(timeout_ms);
+
+	/* Transaction 2: Send dummy to get response */
+	memset(data->tx_buf, 0xFF, ARGOS_SPI_TRANSACTION_SIZE);
+	memset(data->rx_buf, 0, sizeof(data->rx_buf));
+	ret = spi_transaction_64(&cfg->spi, data->tx_buf, data->rx_buf);
+	if (ret < 0) {
+		LOG_ERR("SPI transaction 2 failed: %d", ret);
+		goto unlock;
+	}
+
+	LOG_HEXDUMP_DBG(data->rx_buf, 16, "RAW RX");
+
+	/* Parse raw response: [STATUS] [DATA...] */
+	/* Skip leading 0xAA or 0xFF */
+	size_t offset = 0;
+	while (offset < ARGOS_SPI_TRANSACTION_SIZE &&
+	       (data->rx_buf[offset] == 0xAA || data->rx_buf[offset] == 0xFF)) {
+		offset++;
+	}
+
+	if (offset >= ARGOS_SPI_TRANSACTION_SIZE) {
+		LOG_ERR("No valid response in raw transaction (timeout may be too short)");
+		ret = -ENODATA;
+		goto unlock;
+	}
+
+	*status = data->rx_buf[offset];
+	LOG_DBG("RAW RX: status=0x%02X at offset %zu", *status, offset);
+
+	if (rx_data && rx_len && *rx_len > 0) {
+		size_t avail = ARGOS_SPI_TRANSACTION_SIZE - offset - 1;
+		size_t copy_len = MIN(*rx_len, avail);
+		memcpy(rx_data, &data->rx_buf[offset + 1], copy_len);
+		*rx_len = copy_len;
+	}
+
+	ret = 0;
+
+unlock:
+	k_mutex_unlock(&data->lock);
+	return ret;
+}
+
 int argos_spi_send_only_raw(const struct device *dev, uint8_t cmd,
 			    const uint8_t *tx_data, size_t tx_len)
 {
@@ -796,6 +875,130 @@ int argos_spi_get_rconf(const struct device *dev, uint8_t *rconf, size_t *rconf_
 	}
 
 	LOG_DBG("RCONF received (len=%zu)", *rconf_len);
+	return 0;
+}
+
+int argos_spi_get_mac_status(const struct device *dev, uint8_t *mac_status)
+{
+	uint8_t status;
+	uint8_t resp[4];
+	size_t resp_len = sizeof(resp);
+	int ret;
+
+	if (!mac_status) {
+		return -EINVAL;
+	}
+
+	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_MAC_STATUS, NULL, 0,
+				 resp, &resp_len, &status);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (status != PROT_OK) {
+		LOG_ERR("GET_MAC_STATUS failed: status 0x%02X", status);
+		return -EIO;
+	}
+
+	/* MAC status is in first byte of response */
+	*mac_status = (resp_len > 0) ? resp[0] : MAC_UNKNOWN;
+	LOG_DBG("MAC status: 0x%02X", *mac_status);
+	return 0;
+}
+
+int argos_spi_wait_tx_complete(const struct device *dev, k_timeout_t timeout)
+{
+	uint8_t mac_status;
+	int64_t start = k_uptime_get();
+	int64_t timeout_ms = k_ticks_to_ms_floor64(timeout.ticks);
+	int ret;
+
+	LOG_DBG("Waiting for TX complete (timeout=%lld ms)", timeout_ms);
+
+	while ((k_uptime_get() - start) < timeout_ms) {
+		ret = argos_spi_get_mac_status(dev, &mac_status);
+		if (ret < 0) {
+			LOG_WRN("MAC status read error: %d", ret);
+			k_msleep(ARGOS_TIMING_POLL_MS);
+			continue;
+		}
+
+		/* Check TX result using unified helpers */
+		if (argos_is_tx_complete(mac_status)) {
+			LOG_INF("TX complete: MAC status 0x%02X", mac_status);
+			return 0;
+		}
+
+		if (argos_is_tx_failed(mac_status)) {
+			LOG_ERR("TX failed: MAC status 0x%02X", mac_status);
+			return -EIO;
+		}
+
+		if (argos_is_tx_pending(mac_status)) {
+			/* Still in progress - continue polling */
+			k_msleep(ARGOS_TIMING_POLL_MS);
+			continue;
+		}
+
+		/* Other status (MAC_OK, MAC_RX_RECEIVED, etc.) - continue polling */
+		k_msleep(ARGOS_TIMING_POLL_MS / 2);
+	}
+
+	LOG_ERR("TX timeout after %lld ms", timeout_ms);
+	return -ETIMEDOUT;
+}
+
+int argos_spi_write_tx(const struct device *dev, const uint8_t *data, size_t len)
+{
+	uint8_t status;
+	uint8_t size_data[2];
+	int ret;
+
+	if (!data || len == 0 || len > ARGOS_SPI_MAX_PAYLOAD) {
+		return -EINVAL;
+	}
+
+	LOG_DBG("Sending TX data (%zu bytes)", len);
+
+	/* Step 1: WRITE_TX_REQ (0x14) - Prepare for TX */
+	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_WRITE_TX_REQ, NULL, 0,
+				 NULL, NULL, &status);
+	if (ret < 0) {
+		LOG_ERR("WRITE_TX_REQ failed: %d", ret);
+		return ret;
+	}
+	if (status != PROT_OK) {
+		LOG_ERR("WRITE_TX_REQ rejected: status 0x%02X", status);
+		return -EIO;
+	}
+
+	/* Step 2: WRITE_TX_SIZE (0x15) - Send size (little-endian) */
+	size_data[0] = len & 0xFF;
+	size_data[1] = (len >> 8) & 0xFF;
+	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_WRITE_TX_SIZE, size_data, 2,
+				 NULL, NULL, &status);
+	if (ret < 0) {
+		LOG_ERR("WRITE_TX_SIZE failed: %d", ret);
+		return ret;
+	}
+	if (status != PROT_OK) {
+		LOG_ERR("WRITE_TX_SIZE rejected: status 0x%02X", status);
+		return -EIO;
+	}
+
+	/* Step 3: WRITE_TX (0x16) - Send actual data */
+	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_WRITE_TX, data, len,
+				 NULL, NULL, &status);
+	if (ret < 0) {
+		LOG_ERR("WRITE_TX failed: %d", ret);
+		return ret;
+	}
+	if (status != PROT_OK) {
+		LOG_ERR("WRITE_TX rejected: status 0x%02X", status);
+		return -EIO;
+	}
+
+	LOG_INF("TX data queued (%zu bytes), use wait_tx_complete() to poll", len);
 	return 0;
 }
 

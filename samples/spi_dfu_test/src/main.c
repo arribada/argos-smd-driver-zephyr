@@ -5,6 +5,12 @@
  * Argos SMD SPI DFU Test Application
  *
  * This sample demonstrates firmware update over SPI using Protocol A+.
+ *
+ * Protocol A+ Frame Format:
+ *   Request:  [0xAA][SEQ][CMD][LEN][DATA...][CRC8]
+ *   Response: [0x55][SEQ][STATUS][LEN][DATA...][CRC8]
+ *
+ * The response arrives in the NEXT SPI transaction!
  */
 
 #include <zephyr/kernel.h>
@@ -181,6 +187,7 @@ static int test_dfu_get_info(const struct device *dev)
 static int test_dfu_erase(const struct device *dev)
 {
 	LOG_INF("--- Test: DFU ERASE ---");
+	LOG_INF("(Note: This takes ~2-3 seconds - using 3000ms delay)");
 
 	int ret = argos_dfu_erase(dev);
 	if (ret == 0) {
@@ -199,6 +206,8 @@ static int test_dfu_write_chunk(const struct device *dev)
 	uint32_t addr = ARGOS_FLASH_APPLICATION;
 
 	LOG_INF("--- Test: DFU WRITE CHUNK ---");
+	LOG_INF("Protocol: WRITE_REQ (0x33) + WRITE_DATA (0x34)");
+	LOG_INF("  WRITE_REQ payload: [addr:4B LE][len:2B LE]");
 
 	/* Fill with test pattern */
 	for (int i = 0; i < sizeof(test_data); i++) {
@@ -210,6 +219,71 @@ static int test_dfu_write_chunk(const struct device *dev)
 		LOG_INF("RESULT: PASS - Chunk written at 0x%08X", addr);
 	} else {
 		LOG_ERR("RESULT: FAIL - Write chunk failed: %d", ret);
+	}
+
+	return ret;
+}
+
+/* Test: Read flash data (2-transaction protocol) */
+static int test_dfu_read(const struct device *dev)
+{
+	uint8_t read_data[64];
+	uint32_t addr = ARGOS_FLASH_APPLICATION;
+
+	LOG_INF("--- Test: DFU READ ---");
+	LOG_INF("Protocol: READ_REQ (0x35) + READ_DATA (0x36)");
+	LOG_INF("  READ_REQ payload: [addr:4B LE][len:2B LE]");
+
+	int ret = argos_dfu_read(dev, addr, read_data, sizeof(read_data));
+	if (ret == 0) {
+		LOG_INF("RESULT: PASS - Read %zu bytes from 0x%08X", sizeof(read_data), addr);
+		LOG_INF("  Data: %02X %02X %02X %02X %02X %02X %02X %02X ...",
+			read_data[0], read_data[1], read_data[2], read_data[3],
+			read_data[4], read_data[5], read_data[6], read_data[7]);
+
+		/* Verify pattern matches what was written */
+		bool match = true;
+		for (int i = 0; i < sizeof(read_data); i++) {
+			if (read_data[i] != (uint8_t)i) {
+				match = false;
+				break;
+			}
+		}
+		if (match) {
+			LOG_INF("  Pattern verification: MATCH");
+		} else {
+			LOG_WRN("  Pattern verification: MISMATCH (data may not have been written)");
+		}
+	} else {
+		LOG_ERR("RESULT: FAIL - Read failed: %d", ret);
+	}
+
+	return ret;
+}
+
+/* Test: DFU Get Extended Status */
+static int test_dfu_get_extended_status(const struct device *dev)
+{
+	struct argos_dfu_extended_status status;
+
+	LOG_INF("--- Test: DFU GET EXTENDED STATUS (32 bytes) ---");
+
+	int ret = argos_dfu_get_extended_status(dev, &status);
+	if (ret == 0) {
+		LOG_INF("RESULT: PASS - Extended status retrieved");
+		LOG_INF("  Protocol version: %u", status.protocol_version);
+		LOG_INF("  Bootloader state: %u", status.bootloader_state);
+		LOG_INF("  DFU op state: %u", status.dfu_op_state);
+		LOG_INF("  Last error: 0x%02X", status.last_error);
+		LOG_INF("  Session active: %u", status.session_active);
+		LOG_INF("  Erase done: %u", status.erase_done);
+		LOG_INF("  Verify passed: %u", status.verify_passed);
+		LOG_INF("  Received bytes: %u", status.received_bytes);
+		LOG_INF("  Write address: 0x%08X", status.write_address);
+		LOG_INF("  Frame count: %u", status.frame_count);
+		LOG_INF("  CRC error count: %u", status.crc_error_count);
+	} else {
+		LOG_ERR("RESULT: FAIL - Get extended status failed: %d", ret);
 	}
 
 	return ret;
@@ -268,7 +342,14 @@ int main(void)
 
 	LOG_INF("========================================");
 	LOG_INF("   Argos SMD SPI DFU Test Application");
+	LOG_INF("   Protocol A+ Implementation");
 	LOG_INF("========================================");
+	LOG_INF("");
+	LOG_INF("Protocol A+ uses two-transaction model:");
+	LOG_INF("  TX: [0xAA][SEQ][CMD][LEN][DATA][CRC8]");
+	LOG_INF("  RX: [0x55][SEQ][STAT][LEN][DATA][CRC8]");
+	LOG_INF("  (response arrives in NEXT transaction)");
+	LOG_INF("");
 
 #ifdef USE_EXTERNAL_FIRMWARE
 	LOG_INF("Using EXTERNAL firmware file");
@@ -347,16 +428,32 @@ int main(void)
 	/* ===== PHASE 3: DFU OPERATIONS TESTS ===== */
 	LOG_INF("======================================");
 	LOG_INF("  PHASE 3: DFU OPERATIONS TESTS");
+	LOG_INF("  (Protocol A+ two-transaction model)");
 	LOG_INF("======================================");
 	LOG_INF("");
 
 	/* Make sure we're in bootloader mode */
 	argos_dfu_wait_ready(argos_dev, K_SECONDS(2));
 
+	/* Test GET_EXTENDED_STATUS (32 bytes) */
+	errors += (test_dfu_get_extended_status(argos_dev) != 0) ? 1 : 0;
+	k_msleep(500);
+
+	/* Test ERASE (takes ~2-3 seconds) */
 	errors += (test_dfu_erase(argos_dev) != 0) ? 1 : 0;
 	k_msleep(500);
 
+	/* Test extended status after erase */
+	LOG_INF("--- Checking status after erase ---");
+	test_dfu_get_extended_status(argos_dev);
+	k_msleep(200);
+
+	/* Test WRITE_REQ + WRITE_DATA */
 	errors += (test_dfu_write_chunk(argos_dev) != 0) ? 1 : 0;
+	k_msleep(500);
+
+	/* Test READ_REQ + READ_DATA to verify 2-transaction protocol */
+	errors += (test_dfu_read(argos_dev) != 0) ? 1 : 0;
 	k_msleep(500);
 
 	errors += (test_dfu_abort(argos_dev) != 0) ? 1 : 0;

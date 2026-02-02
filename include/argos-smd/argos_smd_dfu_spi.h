@@ -11,6 +11,7 @@
 #include <zephyr/kernel.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <argos-smd/argos_smd_spi.h>  /* For unified protocol status codes */
 
 #ifdef __cplusplus
 extern "C" {
@@ -53,14 +54,64 @@ extern "C" {
 /* Maximum application size */
 #define ARGOS_MAX_APP_SIZE        (ARGOS_FLASH_USER - ARGOS_FLASH_APPLICATION)
 
+/*
+ * Protocol A+ DFU Command Timing (delay before reading response)
+ * The response arrives in the NEXT SPI transaction!
+ * Uses unified timing constants from argos_smd_spi.h
+ */
+#define ARGOS_DFU_DELAY_PING_MS       ARGOS_TIMING_STANDARD_MS
+#define ARGOS_DFU_DELAY_GET_INFO_MS   ARGOS_TIMING_STANDARD_MS
+#define ARGOS_DFU_DELAY_ERASE_MS      ARGOS_TIMING_ERASE_MS  /* CRITICAL! 3000ms */
+#define ARGOS_DFU_DELAY_WRITE_REQ_MS  ARGOS_TIMING_STANDARD_MS
+#define ARGOS_DFU_DELAY_WRITE_DATA_MS ARGOS_TIMING_WRITE_MS
+#define ARGOS_DFU_DELAY_READ_REQ_MS   ARGOS_TIMING_STANDARD_MS
+#define ARGOS_DFU_DELAY_READ_DATA_MS  ARGOS_TIMING_STANDARD_MS
+#define ARGOS_DFU_DELAY_VERIFY_MS     ARGOS_TIMING_STANDARD_MS
+#define ARGOS_DFU_DELAY_RESET_MS      ARGOS_TIMING_RESET_MS
+#define ARGOS_DFU_DELAY_JUMP_MS       ARGOS_TIMING_RESET_MS
+#define ARGOS_DFU_DELAY_GET_STATUS_MS ARGOS_TIMING_STANDARD_MS
+#define ARGOS_DFU_DELAY_ABORT_MS      ARGOS_TIMING_STANDARD_MS
+#define ARGOS_DFU_DELAY_SET_HEADER_MS ARGOS_TIMING_WRITE_MS
+#define ARGOS_DFU_DELAY_DEFAULT_MS    ARGOS_TIMING_STANDARD_MS
+
 /* DFU timeouts */
-#define ARGOS_DFU_ERASE_TIMEOUT_MS   5000   /* Flash erase takes 2-3 seconds */
+#define ARGOS_DFU_ERASE_TIMEOUT_MS   5000   /* Flash erase polling timeout */
 #define ARGOS_DFU_WRITE_TIMEOUT_MS   1000
 #define ARGOS_DFU_VERIFY_TIMEOUT_MS  2000
-#define ARGOS_DFU_RESET_WAIT_MS      100
+#define ARGOS_DFU_RESET_WAIT_MS      ARGOS_TIMING_RESET_MS
+
+/* Retry configuration */
+#define ARGOS_DFU_MAX_RETRIES        3
+
+/*
+ * DFU Status Codes - Use unified enum from argos_smd_spi.h
+ * Legacy aliases for backward compatibility
+ */
+#define ARGOS_DFU_STATUS_OK            PROT_OK
+#define ARGOS_DFU_STATUS_CRC_ERROR     PROT_CRC_ERROR
+#define ARGOS_DFU_STATUS_ADDR_ERROR    PROT_ADDR_ERROR
+#define ARGOS_DFU_STATUS_FLASH_ERROR   PROT_FLASH_ERROR
+#define ARGOS_DFU_STATUS_BUSY          PROT_BUSY
+#define ARGOS_DFU_STATUS_INVALID_CMD   PROT_INVALID_CMD
+#define ARGOS_DFU_STATUS_NOT_READY     PROT_NOT_READY
+#define ARGOS_DFU_STATUS_VERIFY_ERROR  PROT_VERIFY_ERROR
+#define ARGOS_DFU_STATUS_FRAME_CRC_ERR PROT_FRAME_CRC_ERROR
 
 /**
- * @brief DFU state machine states
+ * @brief DFU operation state (from GET_STATUS extended response)
+ */
+enum argos_dfu_op_state {
+	ARGOS_DFU_OP_IDLE      = 0,  /* Idle */
+	ARGOS_DFU_OP_ERASING   = 1,  /* Erasing flash */
+	ARGOS_DFU_OP_WRITING   = 2,  /* Writing data */
+	ARGOS_DFU_OP_VERIFYING = 3,  /* Verifying CRC */
+	ARGOS_DFU_OP_READY     = 4,  /* Ready for next operation */
+	ARGOS_DFU_OP_COMPLETE  = 5,  /* DFU complete */
+	ARGOS_DFU_OP_ERROR     = 6,  /* Error state */
+};
+
+/**
+ * @brief DFU state machine states (legacy - for compatibility)
  */
 enum argos_dfu_state {
 	ARGOS_DFU_STATE_IDLE,          /* Application mode */
@@ -85,7 +136,7 @@ struct argos_bl_info {
 };
 
 /**
- * @brief DFU status structure
+ * @brief DFU status structure (legacy - for compatibility)
  */
 struct argos_dfu_status {
 	enum argos_dfu_state state;
@@ -93,6 +144,28 @@ struct argos_dfu_status {
 	uint32_t total_bytes;
 	uint8_t last_error;
 };
+
+/**
+ * @brief DFU extended status structure (32 bytes from GET_STATUS 0x3A)
+ *
+ * Protocol A+ GET_STATUS response provides detailed DFU session information.
+ */
+struct argos_dfu_extended_status {
+	uint8_t  protocol_version;   /* Protocol version (0x01) */
+	uint8_t  bootloader_state;   /* Bootloader state machine */
+	uint8_t  dfu_op_state;       /* DFU operation state (enum argos_dfu_op_state) */
+	uint8_t  last_error;         /* Last error code */
+	uint8_t  session_active;     /* 1 if DFU session active */
+	uint8_t  erase_done;         /* 1 if erase completed */
+	uint8_t  verify_passed;      /* 1 if CRC verified OK */
+	uint8_t  reserved;
+	uint32_t received_bytes;     /* Bytes received */
+	uint32_t write_address;      /* Current write address */
+	uint32_t expected_crc;       /* Expected CRC */
+	uint32_t calculated_crc;     /* Calculated CRC */
+	uint32_t frame_count;        /* Frames processed */
+	uint32_t crc_error_count;    /* CRC errors count */
+} __attribute__((packed));
 
 /**
  * @brief Progress callback function type
@@ -156,7 +229,10 @@ int argos_dfu_get_info(const struct device *dev, struct argos_bl_info *info);
  * @brief Erase application flash area
  *
  * Sends DFU_ERASE (0x32) to erase the application area.
- * This operation takes 2-3 seconds.
+ * This operation takes 2-3 seconds (~92 pages at ~22ms each).
+ *
+ * This function uses a fixed 3-second delay before reading the response.
+ * For polling-based erase, use argos_dfu_erase_with_polling().
  *
  * @param dev Pointer to device structure
  * @return 0 on success, negative errno on failure
@@ -164,10 +240,28 @@ int argos_dfu_get_info(const struct device *dev, struct argos_bl_info *info);
 int argos_dfu_erase(const struct device *dev);
 
 /**
+ * @brief Erase application flash with status polling
+ *
+ * Alternative to argos_dfu_erase() that uses GET_STATUS polling
+ * instead of a fixed delay. Polls every 100ms until complete.
+ *
+ * @param dev Pointer to device structure
+ * @return 0 on success, -ETIMEDOUT if erase takes too long, negative errno on failure
+ */
+int argos_dfu_erase_with_polling(const struct device *dev);
+
+/**
  * @brief Write firmware chunk to flash
  *
- * Writes a chunk of firmware data at the specified address.
- * Uses DFU_WRITE_REQ (0x33) followed by DFU_WRITE_DATA (0x34).
+ * Writes a chunk of firmware data using a 2-transaction protocol:
+ *
+ * Transaction 1 - WRITE_REQ (0x33):
+ *   Master: [0x33][addr 4B][len 2B]
+ *   Slave:  [status]  (slave prepares for write)
+ *
+ * Transaction 2 - WRITE_DATA (0x34):
+ *   Master: [0x34][data...]
+ *   Slave:  [status]  (slave writes data to flash)
  *
  * @param dev Pointer to device structure
  * @param addr Flash address to write to
@@ -181,12 +275,20 @@ int argos_dfu_write_chunk(const struct device *dev, uint32_t addr,
 /**
  * @brief Read flash memory
  *
- * Reads data from flash using DFU_READ_REQ (0x35) and DFU_READ_DATA (0x36).
+ * Reads data from flash using a 2-transaction protocol:
+ *
+ * Transaction 1 - READ_REQ (0x35):
+ *   Master: [0x35][addr 4B][len 2B]
+ *   Slave:  [status]  (slave reads flash and stores data)
+ *
+ * Transaction 2 - READ_DATA (0x36):
+ *   Master: [0x36][dummy bytes...]
+ *   Slave:  [status][data...]  (slave sends stored data)
  *
  * @param dev Pointer to device structure
  * @param addr Flash address to read from
  * @param data Buffer to store read data
- * @param len Number of bytes to read
+ * @param len Number of bytes to read (max ARGOS_SPI_MAX_PAYLOAD)
  * @return 0 on success, negative errno on failure
  */
 int argos_dfu_read(const struct device *dev, uint32_t addr, uint8_t *data, size_t len);
@@ -224,7 +326,7 @@ int argos_dfu_reset(const struct device *dev);
 int argos_dfu_jump(const struct device *dev);
 
 /**
- * @brief Get current DFU status
+ * @brief Get current DFU status (legacy interface)
  *
  * Sends DFU_GET_STATUS (0x3A) to query current DFU state.
  *
@@ -233,6 +335,19 @@ int argos_dfu_jump(const struct device *dev);
  * @return 0 on success, negative errno on failure
  */
 int argos_dfu_get_status_spi(const struct device *dev, struct argos_dfu_status *status);
+
+/**
+ * @brief Get extended DFU status (32 bytes)
+ *
+ * Sends DFU_GET_STATUS (0x3A) and returns full 32-byte status structure.
+ * This provides detailed information about the DFU session state.
+ *
+ * @param dev Pointer to device structure
+ * @param status Pointer to store extended status (32 bytes)
+ * @return 0 on success, negative errno on failure
+ */
+int argos_dfu_get_extended_status(const struct device *dev,
+				  struct argos_dfu_extended_status *status);
 
 /**
  * @brief Abort DFU operation
