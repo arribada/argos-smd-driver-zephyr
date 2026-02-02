@@ -57,12 +57,16 @@ extern "C" {
  */
 #define ARGOS_SPI_TRANSACTION_SIZE    64    /* Fixed transaction size */
 #define ARGOS_SPI_IDLE_PATTERN        0xAA  /* Idle byte pattern from slave */
+#define ARGOS_SPI_BUSY_PATTERN        0xBB  /* Busy byte pattern (processing) */
 
 /*
  * Unified Timing Constants (Bootloader + Application)
+ * At 125kHz, 64-byte transaction takes ~4ms.
+ * STM32 needs: transaction(4ms) + detection(10ms) + processing(5ms) = ~20ms
+ * Use 30ms for safe margin.
  */
-#define ARGOS_TIMING_STANDARD_MS      15    /* Standard commands */
-#define ARGOS_TIMING_WRITE_MS         20    /* Flash write commands */
+#define ARGOS_TIMING_STANDARD_MS      30    /* Standard commands */
+#define ARGOS_TIMING_WRITE_MS         50    /* Flash write commands */
 #define ARGOS_TIMING_TX_DATA_MS       100   /* TX data commands */
 #define ARGOS_TIMING_ERASE_MS         3000  /* CRITICAL! Flash erase */
 #define ARGOS_TIMING_RESET_MS         100   /* Reset/jump commands */
@@ -70,7 +74,7 @@ extern "C" {
 
 /* Legacy timing aliases */
 #define ARGOS_SPI_PIPELINE_DELAY_MS   ARGOS_TIMING_STANDARD_MS
-#define ARGOS_SPI_FLASH_DELAY_MS      150   /* Kept for backward compat */
+#define ARGOS_SPI_FLASH_DELAY_MS      200   /* Flash write: page erase + rewrite ~50ms */
 
 /*
  * Application Commands (0x00-0x2A)
@@ -517,6 +521,16 @@ int argos_spi_set_addr(const struct device *dev, const uint8_t *addr, size_t add
 int argos_spi_get_rconf(const struct device *dev, uint8_t *rconf, size_t *rconf_len);
 
 /**
+ * @brief Set radio configuration (CMD 0x25 + 0x26)
+ *
+ * @param dev Pointer to device structure
+ * @param rconf Radio config data to write
+ * @param rconf_len Length of radio config (typically 12 bytes)
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_set_rconf(const struct device *dev, const uint8_t *rconf, size_t rconf_len);
+
+/**
  * @brief Get MAC status (CMD 0x03)
  *
  * @param dev Pointer to device structure
@@ -549,6 +563,23 @@ int argos_spi_wait_tx_complete(const struct device *dev, k_timeout_t timeout);
  * @return 0 on success (TX queued), negative errno on failure
  */
 int argos_spi_write_tx(const struct device *dev, const uint8_t *data, size_t len);
+
+/**
+ * @brief Synchronize with STM32 slave after master restart
+ *
+ * Call this function at the start of communication to ensure the STM32
+ * slave is in a known state. This is especially important after the
+ * master restarts without resetting the STM32.
+ *
+ * The function sends several dummy transactions to:
+ * 1. Flush any pending data in STM32 DMA buffers
+ * 2. Reset the protocol state on both sides
+ * 3. Ensure sequence number alignment
+ *
+ * @param dev Pointer to device structure
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_sync(const struct device *dev);
 
 #ifdef __cplusplus
 }
