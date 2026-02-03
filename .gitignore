@@ -22,3 +22,9 @@ __pycache__
 .cache/
 .Trash-1000
 compile_commands.json
+
+.claude/*
+scripts/*
+argos-smd-at-kineis-firmware_spi_dfu.bin
+argos-smd-at-kineis-firmware_uart_dfu.bin
+build_spi_dfu

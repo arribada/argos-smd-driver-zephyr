@@ -96,9 +96,11 @@ static int test_set_id(void)
 	}
 	log_hex("Original ID", orig_id, len);
 
-	/* Create test ID (increment last byte) */
-	memcpy(new_id, orig_id, 4);
-	new_id[0]++;
+	/* Test ID: 123456 (0x12 0x34 0x56 0x00) */
+	new_id[0] = 0x12;
+	new_id[1] = 0x34;
+	new_id[2] = 0x56;
+	new_id[3] = 0x00;
 
 	/* Write new ID */
 	ret = argos_spi_set_id(dev, new_id, 4);
@@ -148,9 +150,11 @@ static int test_set_addr(void)
 	}
 	log_hex("Original ADDR", orig_addr, len);
 
-	/* Create test ADDR (increment last byte) */
-	memcpy(new_addr, orig_addr, 4);
-	new_addr[0]++;
+	/* Test ADDR: 00112233 */
+	new_addr[0] = 0x00;
+	new_addr[1] = 0x11;
+	new_addr[2] = 0x22;
+	new_addr[3] = 0x33;
 
 	/* Write new ADDR */
 	ret = argos_spi_set_addr(dev, new_addr, 4);
@@ -185,6 +189,60 @@ static int test_set_addr(void)
 	return 0;
 }
 
+/* Test SECRET_KEY write: read original, write test key, verify, restore */
+static int test_set_secret_key(void)
+{
+	uint8_t orig_key[16], verify_key[16];
+	size_t len = sizeof(orig_key);
+	int ret;
+
+	/* Device secret key for encryption (16 bytes) */
+	static const uint8_t test_device_secret_key[16] = {
+		0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+		0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF
+	};
+
+	/* Read original SECRET_KEY */
+	ret = argos_spi_get_secret_key(dev, orig_key, &len);
+	if (ret != 0) {
+		LOG_ERR("  Read original SECRET_KEY failed: %d", ret);
+		return ret;
+	}
+	log_hex("Original SECRET_KEY", orig_key, len);
+
+	/* Write test SECRET_KEY */
+	ret = argos_spi_set_secret_key(dev, test_device_secret_key, sizeof(test_device_secret_key));
+	if (ret != 0) {
+		LOG_ERR("  Write SECRET_KEY failed: %d", ret);
+		return ret;
+	}
+	LOG_INF("  Write OK");
+
+	/* Verify */
+	size_t vlen = sizeof(verify_key);
+	ret = argos_spi_get_secret_key(dev, verify_key, &vlen);
+	if (ret != 0) {
+		LOG_ERR("  Verify read failed: %d", ret);
+		return ret;
+	}
+
+	if (memcmp(test_device_secret_key, verify_key, sizeof(test_device_secret_key)) == 0) {
+		LOG_INF("  Verify OK");
+	} else {
+		log_hex("Expected", test_device_secret_key, sizeof(test_device_secret_key));
+		log_hex("Got", verify_key, vlen);
+		LOG_WRN("  Mismatch");
+	}
+
+	/* Restore original */
+	ret = argos_spi_set_secret_key(dev, orig_key, len);
+	if (ret == 0) {
+		LOG_INF("  Restored original SECRET_KEY");
+	}
+
+	return 0;
+}
+
 /* Test RCONF write: read original, write test config, verify, restore */
 static int test_set_rconf(void)
 {
@@ -192,12 +250,10 @@ static int test_set_rconf(void)
 	size_t len = sizeof(orig_rconf);
 	int ret;
 
-	/* Test radio config (min_freq, max_freq, rf_level, modulation) */
-	static const uint8_t test_rconf[12] = {
-		0x20, 0x3C, 0xF0, 0x17,  /* min_frequency */
-		0x80, 0x26, 0xF1, 0x17,  /* max_frequency */
-		0x1B,                     /* rf_level */
-		0x02, 0x00, 0x08          /* modulation + padding */
+	/* Valid LDK RCONF from Kineis (16 bytes encrypted config) */
+	static const uint8_t test_rconf[16] = {
+		0x03, 0x92, 0x1f, 0xb1, 0x04, 0xb9, 0x28, 0x59,
+		0x20, 0x9b, 0x18, 0xab, 0xd0, 0x09, 0xde, 0x96
 	};
 
 	/* Read original RCONF */
@@ -209,7 +265,7 @@ static int test_set_rconf(void)
 	log_hex("Original RCONF", orig_rconf, len);
 
 	/* Write test RCONF */
-	ret = argos_spi_set_rconf(dev, test_rconf, 12);
+	ret = argos_spi_set_rconf(dev, test_rconf, sizeof(test_rconf));
 	if (ret != 0) {
 		LOG_ERR("  Write RCONF failed: %d", ret);
 		return ret;
@@ -224,10 +280,10 @@ static int test_set_rconf(void)
 		return ret;
 	}
 
-	if (memcmp(test_rconf, verify_rconf, 12) == 0) {
+	if (memcmp(test_rconf, verify_rconf, sizeof(test_rconf)) == 0) {
 		LOG_INF("  Verify OK");
 	} else {
-		log_hex("Expected", test_rconf, 12);
+		log_hex("Expected", test_rconf, sizeof(test_rconf));
 		log_hex("Got", verify_rconf, vlen);
 		LOG_WRN("  Mismatch");
 	}
@@ -246,6 +302,29 @@ static int test_tx_message(void)
 {
 	int ret;
 
+	/* Configure RCONF for TX test */
+	static const uint8_t tx_rconf[16] = {
+		0x3d, 0x67, 0x8a, 0xf1, 0x6b, 0x5a, 0x57, 0x20,
+		0x78, 0xf3, 0xdb, 0xc9, 0x5a, 0x11, 0x04, 0xe7
+	};
+
+	LOG_INF("  Writing RCONF for TX test...");
+	ret = argos_spi_set_rconf(dev, tx_rconf, sizeof(tx_rconf));
+	if (ret != 0) {
+		LOG_ERR("  RCONF write failed: %d", ret);
+		return ret;
+	}
+	LOG_INF("  RCONF configured successfully");
+
+	/* Set KMAC=1 (profile 1) */
+	LOG_INF("  Setting KMAC=1...");
+	ret = argos_spi_set_kmac(dev, 1);
+	if (ret != 0) {
+		LOG_ERR("  KMAC write failed: %d", ret);
+		return ret;
+	}
+	LOG_INF("  KMAC set to 1 successfully");
+
 	/* Test payload: 24 bytes for LDA2 mode (or 16 for LDK)
 	 * The payload size must match the RCONF modulation setting */
 	static const uint8_t tx_data[24] = {
@@ -262,6 +341,10 @@ static int test_tx_message(void)
 		return ret;
 	}
 	LOG_INF("  TX queued successfully");
+
+	/* Wait 2s after TX before checking status (RF transmission in progress) */
+	LOG_INF("  Waiting 2s for RF transmission to start...");
+	k_msleep(2000);
 
 	/* Wait for TX completion with timeout */
 	LOG_INF("  Waiting for TX completion...");
@@ -312,6 +395,7 @@ int main(void)
 	LOG_INF("== WRITE COMMANDS ==");
 	RUN_TEST("SET_ID", test_set_id());
 	RUN_TEST("SET_ADDR", test_set_addr());
+	RUN_TEST("SET_SECRET_KEY", test_set_secret_key());
 
 	/* Phase 4: TX Message (before RCONF changes - RCONF change requires MAC reset) */
 	LOG_INF("");

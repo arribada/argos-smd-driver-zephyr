@@ -131,6 +131,7 @@ static int dfu_send_cmd(const struct device *dev, uint8_t cmd,
 	 * Format: [0xAA][SEQ][CMD][LEN][DATA...][CRC8]
 	 * ═══════════════════════════════════════════════════════════════ */
 	tx_buf[idx++] = DFU_MAGIC_REQUEST;     /* Magic */
+	uint16_t crc_start = idx;              /* CRC starts after magic */
 	tx_buf[idx++] = dfu_seq_num;           /* Sequence number */
 	tx_buf[idx++] = cmd;                   /* Command */
 	tx_buf[idx++] = payload_len;           /* Length */
@@ -140,8 +141,8 @@ static int dfu_send_cmd(const struct device *dev, uint8_t cmd,
 		idx += payload_len;
 	}
 
-	/* CRC calculated over: magic + seq + cmd + len + data */
-	tx_buf[idx] = crc8_ccitt(tx_buf, idx);
+	/* CRC calculated over: SEQ + CMD + LEN + DATA (without magic) */
+	tx_buf[idx] = crc8_ccitt(&tx_buf[crc_start], idx - crc_start);
 	idx++;
 
 	/* Pad to transaction size */
@@ -230,10 +231,10 @@ static int dfu_send_cmd(const struct device *dev, uint8_t cmd,
 		return -EMSGSIZE;
 	}
 
-	/* Verify CRC */
-	size_t frame_len = DFU_HEADER_SIZE + rsp_len;
-	uint8_t expected_crc = crc8_ccitt(&rx_buf[offset], frame_len);
-	uint8_t received_crc = rx_buf[offset + frame_len];
+	/* Verify CRC (calculated over SEQ + STATUS + LEN + DATA, without magic) */
+	size_t crc_len = (DFU_HEADER_SIZE - 1) + rsp_len;  /* -1 to exclude magic byte */
+	uint8_t expected_crc = crc8_ccitt(&rx_buf[offset + 1], crc_len);  /* +1 to skip magic */
+	uint8_t received_crc = rx_buf[offset + DFU_HEADER_SIZE + rsp_len];
 
 	if (expected_crc != received_crc) {
 		LOG_ERR("CRC mismatch: calc=0x%02X recv=0x%02X", expected_crc, received_crc);
@@ -784,16 +785,31 @@ int argos_dfu_set_header(const struct device *dev, const uint8_t *header)
 		return -EINVAL;
 	}
 
-	LOG_DBG("Setting application header (%d bytes)", ARGOS_DFU_HEADER_SIZE);
+	LOG_DBG("Setting application header (%d bytes in 2 chunks)", ARGOS_DFU_HEADER_SIZE);
 
+	/* Send header in two 128-byte chunks (256 > DFU_MAX_PAYLOAD of 250) */
+	const size_t chunk_size = 128;
+
+	/* Chunk 1: First 128 bytes */
 	ret = dfu_send_with_retry(dev, ARGOS_SPI_DFU_CMD_SET_HEADER,
-				  header, ARGOS_DFU_HEADER_SIZE,
+				  header, chunk_size,
 				  resp, &resp_len, ARGOS_DFU_DELAY_SET_HEADER_MS);
 	if (ret != 0) {
-		LOG_ERR("Set header failed: %d", ret);
+		LOG_ERR("Set header chunk 1 failed: %d", ret);
 		return (ret < 0) ? ret : -EIO;
 	}
 
+	/* Chunk 2: Second 128 bytes */
+	resp_len = sizeof(resp);
+	ret = dfu_send_with_retry(dev, ARGOS_SPI_DFU_CMD_SET_HEADER,
+				  header + chunk_size, chunk_size,
+				  resp, &resp_len, ARGOS_DFU_DELAY_SET_HEADER_MS);
+	if (ret != 0) {
+		LOG_ERR("Set header chunk 2 failed: %d", ret);
+		return (ret < 0) ? ret : -EIO;
+	}
+
+	LOG_DBG("Header set successfully (256 bytes)");
 	return 0;
 }
 
@@ -858,12 +874,31 @@ int argos_spi_firmware_update(const struct device *dev,
 		return ret;
 	}
 
-	/* Step 6: Write firmware in chunks */
-	LOG_INF("Step 5/7: Writing firmware (%zu bytes)...", size);
+	/* Step 6: Write application header (256 bytes) */
+	LOG_INF("Step 5/7: Writing application header (256 bytes)...");
+	if (size >= ARGOS_DFU_HEADER_SIZE) {
+		/* First 256 bytes of firmware are the application header */
+		ret = argos_dfu_set_header(dev, firmware);
+		if (ret < 0) {
+			LOG_ERR("Set header failed: %d", ret);
+			argos_dfu_abort(dev);
+			return ret;
+		}
+	} else {
+		LOG_WRN("Firmware too small for header (%zu < 256), skipping header", size);
+	}
+
+	/* Step 7: Write firmware (starting from byte 256) */
+	LOG_INF("Step 6/7: Writing firmware application code...");
 
 	uint32_t addr = ARGOS_FLASH_APPLICATION;
-	size_t offset = 0;
+	size_t offset = ARGOS_DFU_HEADER_SIZE;  /* Start after header */
 	uint32_t last_progress = 0;
+
+	if (size <= ARGOS_DFU_HEADER_SIZE) {
+		LOG_WRN("Firmware is only header, no application code to write");
+		offset = size;  /* Skip write loop */
+	}
 
 	while (offset < size) {
 		size_t chunk_len = MIN(ARGOS_DFU_CHUNK_SIZE, size - offset);
@@ -891,10 +926,12 @@ int argos_spi_firmware_update(const struct device *dev,
 		}
 	}
 
-	LOG_INF("Firmware written: %zu bytes", offset);
+	size_t app_code_written = offset - ARGOS_DFU_HEADER_SIZE;
+	LOG_INF("Application code written: %zu bytes (total with header: %zu bytes)",
+		app_code_written, offset);
 
-	/* Step 7: Verify CRC */
-	LOG_INF("Step 6/7: Verifying CRC...");
+	/* Step 8: Verify CRC */
+	LOG_INF("Step 7/8: Verifying CRC...");
 	ret = argos_dfu_verify(dev, crc32);
 	if (ret < 0) {
 		LOG_ERR("CRC verification failed: %d", ret);
@@ -902,8 +939,8 @@ int argos_spi_firmware_update(const struct device *dev,
 		return ret;
 	}
 
-	/* Step 8: Jump to application */
-	LOG_INF("Step 7/7: Starting application...");
+	/* Step 9: Jump to application */
+	LOG_INF("Step 8/8: Starting application...");
 	ret = argos_dfu_jump(dev);
 	if (ret < 0) {
 		LOG_ERR("Jump to application failed: %d", ret);

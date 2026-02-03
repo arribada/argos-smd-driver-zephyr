@@ -70,7 +70,7 @@ extern "C" {
 #define ARGOS_TIMING_TX_DATA_MS       100   /* TX data commands */
 #define ARGOS_TIMING_ERASE_MS         3000  /* CRITICAL! Flash erase */
 #define ARGOS_TIMING_RESET_MS         100   /* Reset/jump commands */
-#define ARGOS_TIMING_POLL_MS          200   /* Polling interval */
+#define ARGOS_TIMING_POLL_MS          500   /* Polling interval (increased to avoid SPI conflicts during RF TX) */
 
 /* Legacy timing aliases */
 #define ARGOS_SPI_PIPELINE_DELAY_MS   ARGOS_TIMING_STANDARD_MS
@@ -511,6 +511,26 @@ int argos_spi_get_addr(const struct device *dev, uint8_t *addr, size_t *addr_len
 int argos_spi_set_addr(const struct device *dev, const uint8_t *addr, size_t addr_len);
 
 /**
+ * @brief Get device secret key
+ *
+ * @param dev Pointer to device structure
+ * @param key Buffer to receive secret key
+ * @param key_len Pointer to buffer size, updated with actual length
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_secret_key(const struct device *dev, uint8_t *key, size_t *key_len);
+
+/**
+ * @brief Set device secret key (16 bytes for encryption)
+ *
+ * @param dev Pointer to device structure
+ * @param key Secret key data to write
+ * @param key_len Length of secret key (typically 16 bytes)
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_set_secret_key(const struct device *dev, const uint8_t *key, size_t key_len);
+
+/**
  * @brief Get radio configuration
  *
  * @param dev Pointer to device structure
@@ -524,11 +544,29 @@ int argos_spi_get_rconf(const struct device *dev, uint8_t *rconf, size_t *rconf_
  * @brief Set radio configuration (CMD 0x25 + 0x26)
  *
  * @param dev Pointer to device structure
- * @param rconf Radio config data to write
- * @param rconf_len Length of radio config (typically 12 bytes)
+ * @param rconf Radio config data to write (encrypted Kineis config block)
+ * @param rconf_len Length of radio config (16 bytes for valid Kineis RCONF)
  * @return 0 on success, negative errno on failure
  */
 int argos_spi_set_rconf(const struct device *dev, const uint8_t *rconf, size_t rconf_len);
+
+/**
+ * @brief Get KMAC profile value
+ *
+ * @param dev Pointer to device structure
+ * @param kmac Pointer to receive KMAC value
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_kmac(const struct device *dev, uint8_t *kmac);
+
+/**
+ * @brief Set KMAC profile value
+ *
+ * @param dev Pointer to device structure
+ * @param kmac KMAC value to set (e.g., 1 for profile 1)
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_set_kmac(const struct device *dev, uint8_t kmac);
 
 /**
  * @brief Get MAC status (CMD 0x03)

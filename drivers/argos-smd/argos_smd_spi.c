@@ -940,6 +940,57 @@ int argos_spi_set_addr(const struct device *dev, const uint8_t *addr, size_t add
 	return 0;
 }
 
+int argos_spi_get_secret_key(const struct device *dev, uint8_t *key, size_t *key_len)
+{
+	uint8_t status;
+	int ret;
+
+	if (!key || !key_len || *key_len == 0) {
+		return -EINVAL;
+	}
+
+	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_READ_SECKEY, NULL, 0,
+				 key, key_len, &status);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (status != ARGOS_SPI_RSP_OK) {
+		LOG_ERR("GET_SECRET_KEY failed with status: 0x%02X", status);
+		/* When status != OK, the payload contains error code, not valid data */
+		return -EIO;
+	}
+
+	LOG_DBG("SECRET_KEY received (len=%zu)", *key_len);
+	return 0;
+}
+
+int argos_spi_set_secret_key(const struct device *dev, const uint8_t *key, size_t key_len)
+{
+	uint8_t status;
+	int ret;
+
+	if (!key || key_len == 0) {
+		return -EINVAL;
+	}
+
+	/* Use longer delay for flash write operations */
+	ret = argos_spi_transact_internal(dev, ARGOS_SPI_CMD_WRITE_SECKEY, key, key_len,
+					  NULL, NULL, &status,
+					  ARGOS_SPI_FLASH_DELAY_MS);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (status != ARGOS_SPI_RSP_OK) {
+		LOG_ERR("SET_SECRET_KEY failed: status 0x%02X", status);
+		return -EIO;
+	}
+
+	LOG_DBG("SECRET_KEY set successfully");
+	return 0;
+}
+
 int argos_spi_get_rconf(const struct device *dev, uint8_t *rconf, size_t *rconf_len)
 {
 	uint8_t status;
@@ -956,8 +1007,9 @@ int argos_spi_get_rconf(const struct device *dev, uint8_t *rconf, size_t *rconf_
 	}
 
 	if (status != ARGOS_SPI_RSP_OK) {
-		LOG_WRN("GET_RCONF status: 0x%02X", status);
-		/* Don't fail - some devices return non-OK for unconfigured */
+		LOG_ERR("GET_RCONF failed with status: 0x%02X", status);
+		/* When status != OK, the payload contains error code, not valid data */
+		return -EIO;
 	}
 
 	LOG_DBG("RCONF received (len=%zu)", *rconf_len);
@@ -987,6 +1039,56 @@ int argos_spi_set_rconf(const struct device *dev, const uint8_t *rconf, size_t r
 	}
 
 	LOG_DBG("RCONF set successfully");
+	return 0;
+}
+
+int argos_spi_get_kmac(const struct device *dev, uint8_t *kmac)
+{
+	uint8_t status;
+	uint8_t resp[4];
+	size_t resp_len = sizeof(resp);
+	int ret;
+
+	if (!kmac) {
+		return -EINVAL;
+	}
+
+	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_READ_KMAC, NULL, 0,
+				 resp, &resp_len, &status);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (status != ARGOS_SPI_RSP_OK) {
+		LOG_ERR("GET_KMAC failed with status: 0x%02X", status);
+		return -EIO;
+	}
+
+	/* KMAC value is in first byte of response */
+	*kmac = (resp_len > 0) ? resp[0] : 0;
+	LOG_DBG("KMAC received: %u", *kmac);
+	return 0;
+}
+
+int argos_spi_set_kmac(const struct device *dev, uint8_t kmac)
+{
+	uint8_t status;
+	int ret;
+
+	/* Use longer delay for flash write operations */
+	ret = argos_spi_transact_internal(dev, ARGOS_SPI_CMD_WRITE_KMAC, &kmac, 1,
+					  NULL, NULL, &status,
+					  ARGOS_SPI_FLASH_DELAY_MS);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (status != ARGOS_SPI_RSP_OK) {
+		LOG_ERR("SET_KMAC failed: status 0x%02X", status);
+		return -EIO;
+	}
+
+	LOG_DBG("KMAC set successfully to %u", kmac);
 	return 0;
 }
 
@@ -1024,16 +1126,36 @@ int argos_spi_wait_tx_complete(const struct device *dev, k_timeout_t timeout)
 	int64_t start = k_uptime_get();
 	int64_t timeout_ms = k_ticks_to_ms_floor64(timeout.ticks);
 	int ret;
+	int consecutive_errors = 0;
+	const int max_consecutive_errors = 3;
+	uint32_t backoff_delay = ARGOS_TIMING_POLL_MS;
 
 	LOG_DBG("Waiting for TX complete (timeout=%lld ms)", timeout_ms);
 
 	while ((k_uptime_get() - start) < timeout_ms) {
 		ret = argos_spi_get_mac_status(dev, &mac_status);
 		if (ret < 0) {
-			LOG_WRN("MAC status read error: %d", ret);
-			k_msleep(ARGOS_TIMING_POLL_MS);
+			consecutive_errors++;
+			LOG_WRN("MAC status read error: %d (consecutive: %d)", ret, consecutive_errors);
+
+			/* If multiple consecutive errors, try SPI resync */
+			if (consecutive_errors >= max_consecutive_errors) {
+				LOG_WRN("Multiple consecutive errors, attempting SPI resync");
+				argos_spi_sync(dev);
+				consecutive_errors = 0;
+				backoff_delay = ARGOS_TIMING_POLL_MS; /* Reset backoff */
+			} else {
+				/* Exponential backoff for transient errors */
+				backoff_delay = MIN(backoff_delay * 2, 2000);
+			}
+
+			k_msleep(backoff_delay);
 			continue;
 		}
+
+		/* Success - reset error counter and backoff */
+		consecutive_errors = 0;
+		backoff_delay = ARGOS_TIMING_POLL_MS;
 
 		/* Check TX result using unified helpers */
 		if (argos_is_tx_complete(mac_status)) {
@@ -1047,13 +1169,13 @@ int argos_spi_wait_tx_complete(const struct device *dev, k_timeout_t timeout)
 		}
 
 		if (argos_is_tx_pending(mac_status)) {
-			/* Still in progress - continue polling */
+			/* Still in progress - use full polling interval during RF TX */
 			k_msleep(ARGOS_TIMING_POLL_MS);
 			continue;
 		}
 
 		/* Other status (MAC_OK, MAC_RX_RECEIVED, etc.) - continue polling */
-		k_msleep(ARGOS_TIMING_POLL_MS / 2);
+		k_msleep(ARGOS_TIMING_POLL_MS);
 	}
 
 	LOG_ERR("TX timeout after %lld ms", timeout_ms);
