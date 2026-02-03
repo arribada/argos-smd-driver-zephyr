@@ -131,7 +131,6 @@ static int dfu_send_cmd(const struct device *dev, uint8_t cmd,
 	 * Format: [0xAA][SEQ][CMD][LEN][DATA...][CRC8]
 	 * ═══════════════════════════════════════════════════════════════ */
 	tx_buf[idx++] = DFU_MAGIC_REQUEST;     /* Magic */
-	uint16_t crc_start = idx;              /* CRC starts after magic */
 	tx_buf[idx++] = dfu_seq_num;           /* Sequence number */
 	tx_buf[idx++] = cmd;                   /* Command */
 	tx_buf[idx++] = payload_len;           /* Length */
@@ -141,8 +140,8 @@ static int dfu_send_cmd(const struct device *dev, uint8_t cmd,
 		idx += payload_len;
 	}
 
-	/* CRC calculated over: SEQ + CMD + LEN + DATA (without magic) */
-	tx_buf[idx] = crc8_ccitt(&tx_buf[crc_start], idx - crc_start);
+	/* CRC calculated over: MAGIC + SEQ + CMD + LEN + DATA (include magic) */
+	tx_buf[idx] = crc8_ccitt(tx_buf, idx);
 	idx++;
 
 	/* Pad to transaction size */
@@ -231,9 +230,9 @@ static int dfu_send_cmd(const struct device *dev, uint8_t cmd,
 		return -EMSGSIZE;
 	}
 
-	/* Verify CRC (calculated over SEQ + STATUS + LEN + DATA, without magic) */
-	size_t crc_len = (DFU_HEADER_SIZE - 1) + rsp_len;  /* -1 to exclude magic byte */
-	uint8_t expected_crc = crc8_ccitt(&rx_buf[offset + 1], crc_len);  /* +1 to skip magic */
+	/* Verify CRC (calculated over MAGIC + SEQ + STATUS + LEN + DATA, include magic) */
+	size_t crc_len = DFU_HEADER_SIZE + rsp_len;  /* Header (4 bytes) + data */
+	uint8_t expected_crc = crc8_ccitt(&rx_buf[offset], crc_len);  /* Start from magic */
 	uint8_t received_crc = rx_buf[offset + DFU_HEADER_SIZE + rsp_len];
 
 	if (expected_crc != received_crc) {

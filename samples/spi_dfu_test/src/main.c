@@ -386,36 +386,69 @@ int main(void)
 
 	LOG_INF("");
 
-	/* ===== PHASE 1: BASIC COMMUNICATION TESTS ===== */
+	/* ===== PHASE 1: DETECT APP OR BOOTLOADER ===== */
 	LOG_INF("======================================");
-	LOG_INF("  PHASE 1: BASIC COMMUNICATION TESTS");
-	LOG_INF("======================================");
-	LOG_INF("");
-
-	errors += (test_spi_ping(argos_dev) != 0) ? 1 : 0;
-	k_msleep(500);
-
-	errors += (test_spi_get_version(argos_dev) != 0) ? 1 : 0;
-	k_msleep(500);
-
-	LOG_INF("");
-
-	/* ===== PHASE 2: BOOTLOADER MODE TESTS ===== */
-	LOG_INF("======================================");
-	LOG_INF("  PHASE 2: BOOTLOADER MODE TESTS");
+	LOG_INF("  PHASE 1: DETECT MODE (APP/BOOTLOADER)");
 	LOG_INF("======================================");
 	LOG_INF("");
 
-	errors += (test_dfu_enter(argos_dev) != 0) ? 1 : 0;
-	k_msleep(200);
+	bool in_bootloader = false;
+	int ret;
 
-	/* Wait for bootloader to be ready */
-	LOG_INF("Waiting for bootloader...");
-	int ret = argos_dfu_wait_ready(argos_dev, K_SECONDS(5));
-	if (ret != 0) {
-		LOG_ERR("Bootloader not ready: %d", ret);
-		errors++;
+	/* Try to ping application first */
+	LOG_INF("Attempting to communicate with application...");
+	ret = argos_spi_ping(argos_dev);
+	if (ret == 0) {
+		LOG_INF(">> APPLICATION MODE detected");
+		LOG_INF("   Testing application communication...");
+		k_msleep(200);
+
+		errors += (test_spi_get_version(argos_dev) != 0) ? 1 : 0;
+		k_msleep(500);
 	} else {
+		LOG_WRN("Application not responding, checking if already in bootloader...");
+
+		/* Try to ping bootloader */
+		ret = argos_dfu_ping(argos_dev);
+		if (ret == 0) {
+			LOG_INF(">> BOOTLOADER MODE detected (already active)");
+			in_bootloader = true;
+		} else {
+			LOG_ERR(">> No response from application or bootloader!");
+			LOG_ERR("   Check hardware connections (SPI, power)");
+			errors++;
+		}
+	}
+
+	LOG_INF("");
+
+	/* ===== PHASE 2: ENTER BOOTLOADER MODE ===== */
+	LOG_INF("======================================");
+	LOG_INF("  PHASE 2: ENTER BOOTLOADER MODE");
+	LOG_INF("======================================");
+	LOG_INF("");
+
+	if (!in_bootloader) {
+		LOG_INF("Sending DFU_ENTER command to application...");
+		errors += (test_dfu_enter(argos_dev) != 0) ? 1 : 0;
+		k_msleep(200);  /* Wait for app reset */
+
+		/* Wait for bootloader to be ready */
+		LOG_INF("Waiting for bootloader to start...");
+		ret = argos_dfu_wait_ready(argos_dev, K_SECONDS(5));
+		if (ret != 0) {
+			LOG_ERR("Bootloader not ready after DFU_ENTER: %d", ret);
+			errors++;
+		} else {
+			LOG_INF(">> Bootloader started successfully");
+			in_bootloader = true;
+		}
+	} else {
+		LOG_INF("Already in bootloader mode, skipping DFU_ENTER");
+	}
+
+	/* Verify bootloader communication */
+	if (in_bootloader) {
 		errors += (test_dfu_ping(argos_dev) != 0) ? 1 : 0;
 		k_msleep(500);
 
@@ -431,6 +464,13 @@ int main(void)
 	LOG_INF("  (Protocol A+ two-transaction model)");
 	LOG_INF("======================================");
 	LOG_INF("");
+
+	/* Skip DFU tests if not in bootloader mode */
+	if (!in_bootloader) {
+		LOG_ERR("Cannot run DFU tests - not in bootloader mode");
+		LOG_INF("Skipping DFU operations...");
+		goto skip_dfu_tests;
+	}
 
 	/* Make sure we're in bootloader mode */
 	argos_dfu_wait_ready(argos_dev, K_SECONDS(2));
@@ -488,6 +528,7 @@ int main(void)
 
 	LOG_INF("");
 
+skip_dfu_tests:
 	/* ===== TEST SUMMARY ===== */
 	LOG_INF("========================================");
 	LOG_INF("         TEST RESULTS SUMMARY");
