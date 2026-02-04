@@ -306,6 +306,12 @@ int argos_set_id(const struct device *dev, const char *id)
 	return send_set_cmd(dev, AT_ID, id);
 }
 
+int argos_set_seckey(const struct device *dev, const char *seckey)
+{
+	LOG_INF("Setting Argos ID to %s", seckey);
+	return send_set_cmd(dev, AT_SECKEY, seckey);
+}
+
 int argos_set_radioconf(const struct device *dev, const char *rconf)
 {
 	LOG_INF("Setting Argos radio config to %s", rconf);
@@ -423,7 +429,7 @@ static int argos_smd_init(const struct device *dev)
 	static struct argos_smd_data argos_smd_data_##inst = {};                                   \
 	static const struct argos_smd_config argos_smd_config_##inst = {                           \
 		.uart_dev = DEVICE_DT_GET(DT_INST_BUS(inst)),                                      \
-		.wakeup_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, wakeup_gpios, {0}),                 \
+		.wakeup_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, wakeup_gpios, {0}),                  \
 	};                                                                                         \
                                                                                                    \
 	DEVICE_DT_INST_DEFINE(inst, &argos_smd_init, NULL, &argos_smd_data_##inst,                 \

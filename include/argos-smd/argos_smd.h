@@ -52,6 +52,16 @@ int argos_set_serial_number(const struct device *dev, const char *serial_number)
 int argos_set_id(const struct device *dev, const char *id);
 
 /**
+ * @brief Sets the SECKEY of the Argos SMD.
+ * This function sends the command "AT+SECKEY=<seckey>" to configure the device's security key.
+ *
+ * @param dev Pointer to the device structure.
+ * @param seckey The key string to be set.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_set_seckey(const struct device *dev, const char *seckey);
+
+/**
  * @brief Sets the radio configuration of the Argos SMD.
  * This function sends the command "AT+RCONF=<rconf>" to configure the device's radio settings.
  *
