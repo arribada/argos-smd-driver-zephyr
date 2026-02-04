@@ -140,8 +140,10 @@ int send_read_cmd(const struct device *dev, const char *cmd)
 	const int buffer_size = sizeof(buffer);
 
 	size_t message_length = strlen(cmd) + READ_CMD_SIZE_TO_ADD;
-	snprintf(buffer, buffer_size, "%s=?", cmd);
 
+	__ASSERT(message_length < ARGOS_SMD_BUF_SIZE, "Command size exceeds the buffer size");
+
+	snprintf(buffer, buffer_size, "%s=?", cmd);
 	return send_command(dev, buffer, message_length);
 }
 
@@ -269,17 +271,10 @@ static int send_set_cmd(const struct device *dev, const char *cmd, const char *d
 
 	size_t message_length = strlen(cmd) + strlen(data) + SET_CMD_SIZE_TO_ADD;
 
-	if (message_length > buffer_size) {
-		LOG_ERR("Command size exceeds the provided buffers size. Message length: %zu, "
-			"Provided length: %zu.",
-			message_length, buffer_size);
-		return -EINVAL;
-	}
-
-	if (buffer_size > ARGOS_SMD_BUF_SIZE) {
-		LOG_ERR("Command size exceeds the maximum allowed payload size. Message length: "
-			"%zu, Provided length: %zu.",
-			ARGOS_SMD_BUF_SIZE, buffer_size);
+	if (message_length > ARGOS_SMD_BUF_SIZE) {
+		LOG_ERR("Command size exceeds the buffer size. Message size: %zu, "
+			"Buffer size: %zu.",
+			message_length, ARGOS_SMD_BUF_SIZE);
 		return -EINVAL;
 	}
 
