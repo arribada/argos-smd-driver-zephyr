@@ -134,7 +134,7 @@ int send_command(const struct device *dev, uint8_t *command, const uint8_t lengt
 	return 0;
 }
 
-int send_read_cmd(const struct device *dev, const char *cmd)
+int argos_read_command(const struct device *dev, const char *cmd)
 {
 	char buffer[ARGOS_SMD_BUF_SIZE];
 	const int buffer_size = sizeof(buffer);
@@ -158,91 +158,91 @@ void argos_smd_set_callback(const struct device *dev, argos_smd_callback_t callb
 int argos_read_version(const struct device *dev)
 {
 	LOG_INF("Requesting Argos version");
-	return send_read_cmd(dev, AT_VERSION);
+	return argos_read_command(dev, AT_VERSION);
 }
 
 int argos_read_ping(const struct device *dev)
 {
 	LOG_INF("Pinging Argos device");
-	return send_read_cmd(dev, AT_PING);
+	return argos_read_command(dev, AT_PING);
 }
 
 int argos_read_firmware_version(const struct device *dev)
 {
 	LOG_INF("Requesting Argos firmware version");
-	return send_read_cmd(dev, AT_FW);
+	return argos_read_command(dev, AT_FW);
 }
 
 int argos_read_address(const struct device *dev)
 {
 	LOG_INF("Requesting Argos address");
-	return send_read_cmd(dev, AT_ADDR);
+	return argos_read_command(dev, AT_ADDR);
 }
 
 int argos_read_id(const struct device *dev)
 {
 	LOG_INF("Requesting Argos ID");
-	return send_read_cmd(dev, AT_ID);
+	return argos_read_command(dev, AT_ID);
 }
 
 int argos_read_seckey(const struct device *dev)
 {
 	LOG_INF("Requesting Argos security key");
-	return send_read_cmd(dev, AT_SECKEY);
+	return argos_read_command(dev, AT_SECKEY);
 }
 
 int argos_read_serial_number(const struct device *dev)
 {
 	LOG_INF("Request Argos serial number");
-	return send_read_cmd(dev, AT_SN);
+	return argos_read_command(dev, AT_SN);
 }
 
 int argos_read_radioconf(const struct device *dev)
 {
 	LOG_INF("Request Argos configuration");
-	return send_read_cmd(dev, AT_RCONF);
+	return argos_read_command(dev, AT_RCONF);
 }
 
 int argos_read_prepass_enable(const struct device *dev)
 {
 	LOG_INF("Request Argos prepass enable");
-	return send_read_cmd(dev, AT_PREPASS_EN);
+	return argos_read_command(dev, AT_PREPASS_EN);
 }
 
 int argos_read_udate(const struct device *dev)
 {
 	LOG_INF("Request Argos UTC time configured");
-	return send_read_cmd(dev, AT_UDATE);
+	return argos_read_command(dev, AT_UDATE);
 }
 
 int argos_read_lpm(const struct device *dev)
 {
 	LOG_INF("Request Argos low power mode configured");
-	return send_read_cmd(dev, AT_LPM);
+	return argos_read_command(dev, AT_LPM);
 }
 
 int argos_read_mc(const struct device *dev)
 {
 	LOG_INF("Request Argos read Mac counter");
-	return send_read_cmd(dev, AT_MC);
+	return argos_read_command(dev, AT_MC);
 }
 
 int argos_read_tcxo_wu(const struct device *dev)
 {
 	LOG_INF("Request Argos read TCXO warmup timer");
-	return send_read_cmd(dev, AT_TCXO_WU);
+	return argos_read_command(dev, AT_TCXO_WU);
 }
 
 int argos_read_kmac(const struct device *dev)
 {
 	LOG_INF("Request Argos read KMAC profile ");
-	return send_read_cmd(dev, AT_KMAC);
+	return argos_read_command(dev, AT_KMAC);
 }
 
 int argos_read_cw(const struct device *dev)
 {
 	LOG_INF("Request Argos read CW configuration ");
-	return send_read_cmd(dev, AT_CW);
+	return argos_read_command(dev, AT_CW);
 }
 
 int argos_send_raw(const struct device *dev, const char *command)
@@ -264,7 +264,7 @@ int argos_send_raw(const struct device *dev, const char *command)
 	return ret;
 }
 
-static int send_set_cmd(const struct device *dev, const char *cmd, const char *data)
+int argos_set_command(const struct device *dev, const char *cmd, const char *data)
 {
 	char buffer[ARGOS_SMD_BUF_SIZE];
 	const int buffer_size = sizeof(buffer);
@@ -286,79 +286,79 @@ static int send_set_cmd(const struct device *dev, const char *cmd, const char *d
 int argos_set_address(const struct device *dev, const char *address)
 {
 	LOG_INF("Setting Argos address to %s", address);
-	return send_set_cmd(dev, AT_ADDR, address);
+	return argos_set_command(dev, AT_ADDR, address);
 }
 
 int argos_set_serial_number(const struct device *dev, const char *serial_number)
 {
 	LOG_INF("Setting Argos serial number to %s", serial_number);
-	return send_set_cmd(dev, AT_SN, serial_number);
+	return argos_set_command(dev, AT_SN, serial_number);
 }
 
 int argos_set_id(const struct device *dev, const char *id)
 {
 	LOG_INF("Setting Argos ID to %s", id);
-	return send_set_cmd(dev, AT_ID, id);
+	return argos_set_command(dev, AT_ID, id);
 }
 
 int argos_set_seckey(const struct device *dev, const char *seckey)
 {
 	LOG_INF("Setting Argos ID to %s", seckey);
-	return send_set_cmd(dev, AT_SECKEY, seckey);
+	return argos_set_command(dev, AT_SECKEY, seckey);
 }
 
 int argos_set_radioconf(const struct device *dev, const char *rconf)
 {
 	LOG_INF("Setting Argos radio config to %s", rconf);
-	return send_set_cmd(dev, AT_RCONF, rconf);
+	return argos_set_command(dev, AT_RCONF, rconf);
 }
 
 int argos_set_saveradioconf(const struct device *dev, const char *saveconf)
 {
 	LOG_INF("Save radio config to %s", saveconf);
-	return send_set_cmd(dev, AT_SAVE_RCONF, saveconf);
+	return argos_set_command(dev, AT_SAVE_RCONF, saveconf);
 }
 
 int argos_set_prepass_enable(const struct device *dev, const char *prepass)
 {
 	LOG_INF("Setting Argos prepass enable to %s", prepass);
-	return send_set_cmd(dev, AT_PREPASS_EN, prepass);
+	return argos_set_command(dev, AT_PREPASS_EN, prepass);
 }
 
 int argos_set_udate(const struct device *dev, const char *datetime)
 {
 	LOG_INF("Setting Argos Datetime to %s", datetime);
-	return send_set_cmd(dev, AT_UDATE, datetime);
+	return argos_set_command(dev, AT_UDATE, datetime);
 }
 
 int argos_set_lpm(const struct device *dev, const char *lpm)
 {
 	LOG_INF("Setting Argos Low power profile to %s", lpm);
-	return send_set_cmd(dev, AT_LPM, lpm);
+	return argos_set_command(dev, AT_LPM, lpm);
 }
 
 int argos_set_mc(const struct device *dev, const char *mc)
 {
 	LOG_INF("Setting Argos Mac Counter to %s", mc);
-	return send_set_cmd(dev, AT_MC, mc);
+	return argos_set_command(dev, AT_MC, mc);
 }
 
 int argos_set_tcxo_wu(const struct device *dev, const char *tcxo_wu)
 {
 	LOG_INF("Setting Argos TCXO warmup to %s", tcxo_wu);
-	return send_set_cmd(dev, AT_TCXO_WU, tcxo_wu);
+	return argos_set_command(dev, AT_TCXO_WU, tcxo_wu);
 }
 
 int argos_set_kmac(const struct device *dev, const char *kmac)
 {
 	LOG_INF("Setting Argos KMAC to %s", kmac);
-	return send_set_cmd(dev, AT_KMAC, kmac);
+	return argos_set_command(dev, AT_KMAC, kmac);
 }
 
 int argos_set_cw(const struct device *dev, const char *cw)
 {
 	LOG_INF("Setting Argos set Continuous wave RF test to %s", cw);
-	return send_set_cmd(dev, AT_CW, cw);
+	return argos_set_command(dev, AT_CW, cw);
 }
 
 int argos_send_payload(const struct device *dev, const char *paylod)
@@ -374,7 +374,7 @@ int argos_send_payload(const struct device *dev, const char *paylod)
 	}
 
 	LOG_INF("Transmitting Following Message: %s", paylod);
-	return send_set_cmd(dev, AT_TX, paylod);
+	return argos_set_command(dev, AT_TX, paylod);
 }
 
 static int argos_smd_init(const struct device *dev)

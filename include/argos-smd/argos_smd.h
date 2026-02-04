@@ -12,6 +12,25 @@ extern "C" {
 
 #define ARGOS_SMD_BUF_SIZE 255
 
+// Commands Availables to be used with 'argos_send_read_command()' or 'argos_send_set_command()'
+#define AT_VERSION    "AT+VERSION"    // Get version of the module
+#define AT_PING       "AT+PING"       // Ping the module
+#define AT_FW         "AT+FW"         // Get firmware version
+#define AT_ADDR       "AT+ADDR"       // Get MAC address
+#define AT_ID         "AT+ID"         // Get device ID
+#define AT_SECKEY     "AT+SECKEY"     // Get security key
+#define AT_SN         "AT+SN"         // Get serial number
+#define AT_RCONF      "AT+RCONF"      // Get radio configuration
+#define AT_SAVE_RCONF "AT+SAVE_RCONF" // Save radio configuration.
+#define AT_LPM        "AT+LPM"        // Get/Set low power mode
+#define AT_MC         "AT+MC"         // Get/Set MAC counter
+#define AT_TCXO_WU    "AT+TCXO_WU"    // Get/Set TCXO wakeup time
+#define AT_TX         "AT+TX"         // Send raw data
+#define AT_PREPASS_EN "AT+PREPASS_EN" // Get/Set prepass. Not implemented
+#define AT_UDATE      "AT+UDATE"      // UTC datetime update
+#define AT_KMAC       "AT+KMAC"       // Get/Set KMAC profile
+#define AT_CW         "AT+CW"         // Get/Set Continuous wave test
+
 /**
  * @brief Callback invoked by when a response has been received.
  *
@@ -21,6 +40,17 @@ extern "C" {
 typedef void (*argos_smd_callback_t)(const char *buf, void *user_data);
 
 /* Library Functions */
+
+/**
+ * @brief Sends a set AT command to the Argos SMD.
+ * This function sends the "AT+[cmd]=[data]"
+ *
+ * @param dev Pointer to the device structure.
+ * @param command The AT command to send (e.g., AT+ID). Must be null terminated.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_set_command(const struct device *dev, const char *cmd, const char *data);
+
 /**
  * @brief Sets the address of the Argos SMD.
  * This function sends the command "AT+ADDR=<address>" to configure the device's address.
@@ -211,6 +241,16 @@ int argos_smd_wakeup_enable(const struct device *dev);
  * @return 0 on success, -ENOTSUP if no wakeup GPIO is configured, negative errno on error.
  */
 int argos_smd_wakeup_disable(const struct device *dev);
+
+/**
+ * @brief Sends a read AT command to the Argos SMD.
+ * This function sends the AT+[cmd]=?
+ *
+ * @param dev Pointer to the device structure.
+ * @param command The AT command to send (e.g., AT+PING). Must be null terminated.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_read_command(const struct device *dev, const char *cmd);
 
 /**
  * @brief Read version of Argos SMD.
