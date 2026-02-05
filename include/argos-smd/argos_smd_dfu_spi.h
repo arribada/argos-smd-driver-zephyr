@@ -43,16 +43,30 @@ extern "C" {
 /* Application header size */
 #define ARGOS_DFU_HEADER_SIZE     256
 
-/* Flash memory layout */
-#define ARGOS_FLASH_BOOTLOADER    0x08000000  /* 32 KB */
-#define ARGOS_FLASH_APP_HEADER    0x08008000  /* 256 bytes */
-#define ARGOS_FLASH_APPLICATION   0x08008100  /* ~183 KB */
-#define ARGOS_FLASH_USER          0x0803B000  /* 18 KB (preserved) */
-#define ARGOS_FLASH_BL_STATE      0x0803B800  /* 2 KB */
+/*
+ * Flash memory layout (STM32WL55 - Bootloader AFTER application)
+ *
+ * 0x08000000 +------------------+
+ *            | APPLICATION      | 204 KB (102 pages)
+ * 0x08033000 +------------------+
+ *            | BOOTLOADER       | 32 KB (16 pages)
+ * 0x0803B000 +------------------+
+ *            | FLASH_USER       | 20 KB (Kineis config) - PRESERVED
+ * 0x08040000 +------------------+ End of Flash
+ *
+ * NOTE: Application starts at 0x08000000 for Kineis library compatibility.
+ * The bootloader is located AFTER the application at 0x08033000.
+ */
+#define ARGOS_FLASH_APPLICATION   0x08000000  /* Application at start */
+#define ARGOS_FLASH_APP_SIZE      0x33000     /* 204 KB */
+#define ARGOS_FLASH_BOOTLOADER    0x08033000  /* Bootloader AFTER app */
+#define ARGOS_FLASH_BL_SIZE       0x8000      /* 32 KB */
+#define ARGOS_FLASH_USER          0x0803B000  /* 20 KB (preserved) */
+#define ARGOS_FLASH_USER_SIZE     0x5000      /* 20 KB */
 #define ARGOS_FLASH_END           0x08040000
 
 /* Maximum application size */
-#define ARGOS_MAX_APP_SIZE        (ARGOS_FLASH_USER - ARGOS_FLASH_APPLICATION)
+#define ARGOS_MAX_APP_SIZE        ARGOS_FLASH_APP_SIZE
 
 /*
  * Protocol A+ DFU Command Timing (delay before reading response)

@@ -28,3 +28,4 @@ scripts/*
 argos-smd-at-kineis-firmware_spi_dfu.bin
 argos-smd-at-kineis-firmware_uart_dfu.bin
 build_spi_dfu
+argos-smd-at-kineis-firmware_dfu.bin

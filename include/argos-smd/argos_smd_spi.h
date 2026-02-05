@@ -66,7 +66,7 @@ extern "C" {
  * Use 30ms for safe margin.
  */
 #define ARGOS_TIMING_STANDARD_MS      30    /* Standard commands */
-#define ARGOS_TIMING_WRITE_MS         50    /* Flash write commands */
+#define ARGOS_TIMING_WRITE_MS         100   /* Flash write: up to 50ms write + 10ms detect + margin */
 #define ARGOS_TIMING_TX_DATA_MS       100   /* TX data commands */
 #define ARGOS_TIMING_ERASE_MS         3000  /* CRITICAL! Flash erase */
 #define ARGOS_TIMING_RESET_MS         100   /* Reset/jump commands */

@@ -299,29 +299,27 @@ static int dfu_send_with_retry(const struct device *dev, uint8_t cmd,
 
 int argos_dfu_enter(const struct device *dev)
 {
-	uint8_t status;
 	int ret;
 
 	LOG_INF("Entering DFU bootloader mode...");
 
-	/* Send CMD_DFU_ENTER (0x3F) - device will ACK then reset */
-	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_DFU_ENTER, NULL, 0, NULL, NULL, &status);
+	/*
+	 * Send CMD_DFU_ENTER (0x3F) - device will reset immediately after receiving!
+	 * We use send_only because the STM32 resets before it can send a proper response.
+	 * The pipelined protocol's Transaction 2 (NOP to get response) would fail.
+	 */
+	ret = argos_spi_send_only(dev, ARGOS_SPI_CMD_DFU_ENTER, NULL, 0);
 	if (ret < 0) {
 		LOG_ERR("Failed to send DFU enter command: %d", ret);
 		return ret;
 	}
 
-	if (status != ARGOS_SPI_RSP_OK) {
-		LOG_ERR("DFU enter rejected: status 0x%02X", status);
-		return -EIO;
-	}
-
-	LOG_INF("DFU enter acknowledged, device will reset to bootloader");
+	LOG_INF("DFU enter command sent, waiting for device to reset to bootloader...");
 
 	/* Reset DFU sequence number for new session */
 	dfu_seq_num = 0;
 
-	/* Wait for device to reset */
+	/* Wait for device to reset and bootloader to start */
 	k_msleep(ARGOS_DFU_RESET_WAIT_MS);
 
 	return 0;
@@ -873,31 +871,22 @@ int argos_spi_firmware_update(const struct device *dev,
 		return ret;
 	}
 
-	/* Step 6: Write application header (256 bytes) */
-	LOG_INF("Step 5/7: Writing application header (256 bytes)...");
-	if (size >= ARGOS_DFU_HEADER_SIZE) {
-		/* First 256 bytes of firmware are the application header */
-		ret = argos_dfu_set_header(dev, firmware);
-		if (ret < 0) {
-			LOG_ERR("Set header failed: %d", ret);
-			argos_dfu_abort(dev);
-			return ret;
-		}
-	} else {
-		LOG_WRN("Firmware too small for header (%zu < 256), skipping header", size);
-	}
-
-	/* Step 7: Write firmware (starting from byte 256) */
-	LOG_INF("Step 6/7: Writing firmware application code...");
+	/*
+	 * Step 6: Write entire firmware
+	 *
+	 * NOTE: For standard STM32 .bin files (without custom app_header_t),
+	 * we write the entire firmware starting at ARGOS_FLASH_APPLICATION.
+	 * The bootloader will validate using "legacy mode" (checking for
+	 * valid stack pointer and entry point in the vector table).
+	 *
+	 * If firmware has a custom app_header_t (256 bytes with "KINE" magic),
+	 * the bootloader will use full header validation.
+	 */
+	LOG_INF("Step 5/6: Writing firmware (%zu bytes)...", size);
 
 	uint32_t addr = ARGOS_FLASH_APPLICATION;
-	size_t offset = ARGOS_DFU_HEADER_SIZE;  /* Start after header */
+	size_t offset = 0;  /* Start from beginning - no header skip */
 	uint32_t last_progress = 0;
-
-	if (size <= ARGOS_DFU_HEADER_SIZE) {
-		LOG_WRN("Firmware is only header, no application code to write");
-		offset = size;  /* Skip write loop */
-	}
 
 	while (offset < size) {
 		size_t chunk_len = MIN(ARGOS_DFU_CHUNK_SIZE, size - offset);
@@ -925,12 +914,10 @@ int argos_spi_firmware_update(const struct device *dev,
 		}
 	}
 
-	size_t app_code_written = offset - ARGOS_DFU_HEADER_SIZE;
-	LOG_INF("Application code written: %zu bytes (total with header: %zu bytes)",
-		app_code_written, offset);
+	LOG_INF("Firmware written: %zu bytes", offset);
 
-	/* Step 8: Verify CRC */
-	LOG_INF("Step 7/8: Verifying CRC...");
+	/* Step 7: Verify CRC */
+	LOG_INF("Step 6/6: Verifying CRC...");
 	ret = argos_dfu_verify(dev, crc32);
 	if (ret < 0) {
 		LOG_ERR("CRC verification failed: %d", ret);
@@ -938,8 +925,8 @@ int argos_spi_firmware_update(const struct device *dev,
 		return ret;
 	}
 
-	/* Step 9: Jump to application */
-	LOG_INF("Step 8/8: Starting application...");
+	/* Step 8: Jump to application */
+	LOG_INF("Jumping to application...");
 	ret = argos_dfu_jump(dev);
 	if (ret < 0) {
 		LOG_ERR("Jump to application failed: %d", ret);
