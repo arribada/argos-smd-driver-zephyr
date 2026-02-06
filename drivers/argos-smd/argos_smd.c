@@ -25,6 +25,26 @@
 
 LOG_MODULE_REGISTER(MODULE, CONFIG_ARGOS_SMD_LOG_LEVEL);
 
+static const char *command_strings[] = {
+	[AT_VERSION] = "AT+VERSION",
+	[AT_PING] = "AT+PING",
+	[AT_FW] = "AT+FW",
+	[AT_ADDR] = "AT+ADDR",
+	[AT_ID] = "AT+ID",
+	[AT_SECKEY] = "AT+SECKEY",
+	[AT_SN] = "AT+SN",
+	[AT_RCONF] = "AT+RCONF",
+	[AT_SAVE_RCONF] = "AT+SAVE_RCONF",
+	[AT_LPM] = "AT+LPM",
+	[AT_MC] = "AT+MC",
+	[AT_TCXO_WU] = "AT+TCXO_WU",
+	[AT_TX] = "AT+TX",
+	[AT_PREPASS_EN] = "AT+PREPASS_EN",
+	[AT_UDATE] = "AT+UDATE",
+	[AT_KMAC] = "AT+KMAC",
+	[AT_CW] = "AT+CW",
+};
+
 static void argos_smd_uart_flush(const struct device *dev)
 {
 	const struct argos_smd_config *cfg = dev->config;
@@ -134,16 +154,18 @@ int send_command(const struct device *dev, uint8_t *command, const uint8_t lengt
 	return 0;
 }
 
-int argos_read_command(const struct device *dev, const char *cmd)
+int argos_read_command(const struct device *dev, at_command_t cmd)
 {
 	char buffer[ARGOS_SMD_BUF_SIZE];
 	const int buffer_size = sizeof(buffer);
 
-	size_t message_length = strlen(cmd) + READ_CMD_SIZE_TO_ADD;
+	const char *cmd_str = command_strings[cmd];
+
+	size_t message_length = strlen(cmd_str) + READ_CMD_SIZE_TO_ADD;
 
 	__ASSERT(message_length < ARGOS_SMD_BUF_SIZE, "Command size exceeds the buffer size");
 
-	snprintf(buffer, buffer_size, "%s=?", cmd);
+	snprintf(buffer, buffer_size, "%s=?", cmd_str);
 	return send_command(dev, buffer, message_length);
 }
 
@@ -264,12 +286,14 @@ int argos_send_raw(const struct device *dev, const char *command)
 	return ret;
 }
 
-int argos_set_command(const struct device *dev, const char *cmd, const char *data)
+int argos_set_command(const struct device *dev, at_command_t cmd, const char *data)
 {
 	char buffer[ARGOS_SMD_BUF_SIZE];
 	const int buffer_size = sizeof(buffer);
 
-	size_t message_length = strlen(cmd) + strlen(data) + SET_CMD_SIZE_TO_ADD;
+	const char *cmd_str = command_strings[cmd];
+
+	size_t message_length = strlen(cmd_str) + strlen(data) + SET_CMD_SIZE_TO_ADD;
 
 	if (message_length > ARGOS_SMD_BUF_SIZE) {
 		LOG_ERR("Command size exceeds the buffer size. Message size: %zu, "
@@ -278,7 +302,7 @@ int argos_set_command(const struct device *dev, const char *cmd, const char *dat
 		return -EINVAL;
 	}
 
-	snprintf(buffer, buffer_size, "%s=%s", cmd, data);
+	snprintf(buffer, buffer_size, "%s=%s", cmd_str, data);
 
 	return send_command(dev, buffer, message_length);
 }
