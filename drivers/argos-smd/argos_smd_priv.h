@@ -21,26 +21,6 @@ extern "C" {
 #define TX_MAX_VLDA4_PAYLOAD_SIZE 24 / 8  // Bytes
 #define TX_MAX_LDK_PAYLOAD_SIZE   152 / 8 // Bytes
 
-// cmd availables
-#define AT_VERSION    "AT+VERSION" // Get version of the module
-#define AT_PING       "AT+PING"    // Ping the module
-#define AT_FW         "AT+FW"      // Get firmware version
-#define AT_ADDR       "AT+ADDR"    // Get MAC address
-#define AT_ID         "AT+ID"      // Get device ID
-#define AT_SECKEY     "AT+SECKEY"  // Get security key
-#define AT_SN         "AT+SN"      // Get serial number
-#define AT_RCONF      "AT+RCONF"   // Get radio configuration
-// TODO: to be removed saved by default in flash
-#define AT_SAVE_RCONF "AT+SAVE_RCONF" // Save radio configuration.
-#define AT_LPM        "AT+LPM"        // Get/Set low power mode
-#define AT_MC         "AT+MC"         // Get/Set MAC counter
-#define AT_TCXO_WU    "AT+TCXO_WU"    // Get/Set TCXO wakeup time
-#define AT_TX         "AT+TX"         // Send raw data
-#define AT_PREPASS_EN "AT+PREPASS_EN" // Get/Set prepass. Not implemented
-#define AT_UDATE      "AT+UDATE"      // UTC datetime update
-#define AT_KMAC       "AT+KMAC"       // Get/Set KMAC profile
-#define AT_CW         "AT+CW"         // Get/Set Continuous wave test
-
 // Define all the ways functions can return
 #define RESPONSE_PENDING 0
 #define ERROR_CMD_LENGTH 1
