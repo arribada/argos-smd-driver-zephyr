@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <argos-smd/argos_smd_spi.h>  /* For unified protocol status codes */
+#include <argos-smd/argos_crc.h>      /* For argos_dfu_crc32() */
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,8 +38,11 @@ extern "C" {
  * 8. Jump to application (DFU_JUMP 0x39)
  */
 
-/* DFU chunk size for writes (256 bytes recommended) */
-#define ARGOS_DFU_CHUNK_SIZE      256
+/* DFU chunk size for writes
+ * Protocol A+ LEN field is 1 byte (uint8_t), max payload = 255 bytes.
+ * STM32 flash requires 8-byte alignment, so use 248 (31 * 8).
+ * Must be <= DFU_MAX_PAYLOAD in argos_smd_dfu_spi.c */
+#define ARGOS_DFU_CHUNK_SIZE      248
 
 /* Application header size */
 #define ARGOS_DFU_HEADER_SIZE     256
@@ -88,28 +92,16 @@ extern "C" {
 #define ARGOS_DFU_DELAY_SET_HEADER_MS ARGOS_TIMING_WRITE_MS
 #define ARGOS_DFU_DELAY_DEFAULT_MS    ARGOS_TIMING_STANDARD_MS
 
-/* DFU timeouts */
-#define ARGOS_DFU_ERASE_TIMEOUT_MS   5000   /* Flash erase polling timeout */
-#define ARGOS_DFU_WRITE_TIMEOUT_MS   1000
-#define ARGOS_DFU_VERIFY_TIMEOUT_MS  2000
+/* DFU reset wait time */
 #define ARGOS_DFU_RESET_WAIT_MS      ARGOS_TIMING_RESET_MS
 
 /* Retry configuration */
 #define ARGOS_DFU_MAX_RETRIES        3
 
 /*
- * DFU Status Codes - Use unified enum from argos_smd_spi.h
- * Legacy aliases for backward compatibility
+ * DFU Status Codes - Use unified enum argos_protocol_status from argos_smd_spi.h
+ * (PROT_OK, PROT_CRC_ERROR, PROT_ADDR_ERROR, etc.)
  */
-#define ARGOS_DFU_STATUS_OK            PROT_OK
-#define ARGOS_DFU_STATUS_CRC_ERROR     PROT_CRC_ERROR
-#define ARGOS_DFU_STATUS_ADDR_ERROR    PROT_ADDR_ERROR
-#define ARGOS_DFU_STATUS_FLASH_ERROR   PROT_FLASH_ERROR
-#define ARGOS_DFU_STATUS_BUSY          PROT_BUSY
-#define ARGOS_DFU_STATUS_INVALID_CMD   PROT_INVALID_CMD
-#define ARGOS_DFU_STATUS_NOT_READY     PROT_NOT_READY
-#define ARGOS_DFU_STATUS_VERIFY_ERROR  PROT_VERIFY_ERROR
-#define ARGOS_DFU_STATUS_FRAME_CRC_ERR PROT_FRAME_CRC_ERROR
 
 /**
  * @brief DFU operation state (from GET_STATUS extended response)
@@ -125,16 +117,18 @@ enum argos_dfu_op_state {
 };
 
 /**
- * @brief DFU state machine states (legacy - for compatibility)
+ * @brief DFU state machine states for SPI DFU
+ *
+ * Note: Named argos_dfu_spi_state to avoid conflict with argos_dfu_state in argos_dfu.h (UART DFU)
  */
-enum argos_dfu_state {
-	ARGOS_DFU_STATE_IDLE,          /* Application mode */
-	ARGOS_DFU_STATE_BOOTLOADER,    /* Bootloader mode, ready for DFU */
-	ARGOS_DFU_STATE_ERASING,       /* Flash erase in progress */
-	ARGOS_DFU_STATE_WRITING,       /* Writing firmware chunks */
-	ARGOS_DFU_STATE_VERIFYING,     /* CRC verification */
-	ARGOS_DFU_STATE_COMPLETE,      /* DFU successful */
-	ARGOS_DFU_STATE_ERROR,         /* DFU error */
+enum argos_dfu_spi_state {
+	ARGOS_DFU_SPI_STATE_IDLE,          /* Application mode */
+	ARGOS_DFU_SPI_STATE_BOOTLOADER,    /* Bootloader mode, ready for DFU */
+	ARGOS_DFU_SPI_STATE_ERASING,       /* Flash erase in progress */
+	ARGOS_DFU_SPI_STATE_WRITING,       /* Writing firmware chunks */
+	ARGOS_DFU_SPI_STATE_VERIFYING,     /* CRC verification */
+	ARGOS_DFU_SPI_STATE_COMPLETE,      /* DFU successful */
+	ARGOS_DFU_SPI_STATE_ERROR,         /* DFU error */
 };
 
 /**
@@ -150,10 +144,10 @@ struct argos_bl_info {
 };
 
 /**
- * @brief DFU status structure (legacy - for compatibility)
+ * @brief DFU status structure for SPI DFU
  */
-struct argos_dfu_status {
-	enum argos_dfu_state state;
+struct argos_dfu_spi_status {
+	enum argos_dfu_spi_state state;
 	uint32_t bytes_written;
 	uint32_t total_bytes;
 	uint8_t last_error;
@@ -348,7 +342,7 @@ int argos_dfu_jump(const struct device *dev);
  * @param status Pointer to store status
  * @return 0 on success, negative errno on failure
  */
-int argos_dfu_get_status_spi(const struct device *dev, struct argos_dfu_status *status);
+int argos_dfu_get_status_spi(const struct device *dev, struct argos_dfu_spi_status *status);
 
 /**
  * @brief Get extended DFU status (32 bytes)
@@ -407,16 +401,7 @@ int argos_spi_firmware_update(const struct device *dev,
 			      const uint8_t *firmware, size_t size,
 			      argos_dfu_progress_cb_t progress_cb, void *user_data);
 
-/**
- * @brief Calculate CRC32 checksum (same algorithm as UART DFU)
- *
- * Uses standard polynomial 0x04C11DB7 (reflected form 0xEDB88320).
- *
- * @param data Pointer to data buffer
- * @param len Length of data in bytes
- * @return CRC32 checksum value
- */
-uint32_t argos_dfu_crc32(const uint8_t *data, size_t len);
+/* CRC32 function is provided by argos_crc.h (shared with UART DFU) */
 
 #ifdef __cplusplus
 }

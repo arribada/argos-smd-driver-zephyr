@@ -29,7 +29,8 @@ extern "C" {
 #define AT_ID         "AT+ID"      // Get device ID
 #define AT_SECKEY     "AT+SECKEY"  // Get security key
 #define AT_SN         "AT+SN"      // Get serial number
-#define AT_RCONF      "AT+RCONF"   // Get radio configuration
+#define AT_RCONF      "AT+RCONF"      // Get radio configuration (decoded)
+#define AT_RCONFRAW   "AT+RCONFRAW"   // Get raw radio configuration (16 bytes hex)
 // TODO: to be removed saved by default in flash
 #define AT_SAVE_RCONF "AT+SAVE_RCONF" // Save radio configuration.
 #define AT_LPM        "AT+LPM"        // Get/Set low power mode

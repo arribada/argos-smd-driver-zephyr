@@ -275,6 +275,17 @@ int argos_read_seckey(const struct device *dev);
 int argos_read_radioconf(const struct device *dev);
 
 /**
+ * @brief Reads the raw radio configuration of the Argos SMD.
+ * This function sends the command "AT+RCONFRAW=?" to the Argos SMD to request
+ * the raw 16 bytes of radio configuration stored in flash (without decoding).
+ * Response format: +RCONFRAW=<32 hex characters>
+ *
+ * @param dev Argos SMD Device pointer
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_read_radioconf_raw(const struct device *dev);
+
+/**
  * @brief Reads the prepass enable variable of the Argos SMD.
  * This function sends the command "AT+PREPASS_EN=?" to the Argos SMD to request its configuration.
  *

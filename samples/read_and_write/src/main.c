@@ -29,7 +29,7 @@ int main(void)
 {
 	char out[RESPONSE_BUFFER_SIZE];
 
-	const struct device *dev_smd = DEVICE_DT_GET_ONE(arribada_argossmd);
+	const struct device *dev_smd = DEVICE_DT_GET_ONE(arribada_argos_smd_uart);
 
 	LOG_INF("Zephyr SMD Read and Write Sample");
 
@@ -47,6 +47,42 @@ int main(void)
 
 	argos_read_ping(dev_smd);
 
+	k_msgq_get(&response_msgq, out, K_FOREVER);
+	if (strcmp(out, "+OK") != 0) {
+		LOG_ERR("Invalid Response: %s", out);
+	}
+
+	/////////////////////////////////////////////////
+
+	argos_read_radioconf(dev_smd);
+
+	/* First response: +RCONF=<hex data> */
+	k_msgq_get(&response_msgq, out, K_FOREVER);
+	if (strncmp(out, "+RCONF=", 7) != 0) {
+		LOG_ERR("Invalid Response: %s", out);
+	} else {
+		LOG_INF("RCONF: %s", out);
+	}
+
+	/* Second response: +OK */
+	k_msgq_get(&response_msgq, out, K_FOREVER);
+	if (strcmp(out, "+OK") != 0) {
+		LOG_ERR("Invalid Response: %s", out);
+	}
+
+	/////////////////////////////////////////////////
+
+	argos_read_radioconf_raw(dev_smd);
+
+	/* First response: +RCONFRAW=<32 hex chars> */
+	k_msgq_get(&response_msgq, out, K_FOREVER);
+	if (strncmp(out, "+RCONFRAW=", 10) != 0) {
+		LOG_ERR("Invalid Response: %s", out);
+	} else {
+		LOG_INF("RCONFRAW: %s", out);
+	}
+
+	/* Second response: +OK */
 	k_msgq_get(&response_msgq, out, K_FOREVER);
 	if (strcmp(out, "+OK") != 0) {
 		LOG_ERR("Invalid Response: %s", out);

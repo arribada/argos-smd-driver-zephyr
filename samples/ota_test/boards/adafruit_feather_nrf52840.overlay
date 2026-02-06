@@ -66,7 +66,7 @@
 	pinctrl-1 = <&uart1_sleep>;
 	pinctrl-names = "default", "sleep";
 
-	argos_smd: argos-smd {
+	argossmd: argos-smd {
 		compatible = "arribada,argos-smd-uart";
 		label = "ARGOS_SMD";
 

@@ -389,6 +389,7 @@ int main(void)
 	RUN_TEST("ID", test_read_binary("ID", argos_spi_get_id));
 	RUN_TEST("ADDR", test_read_binary("Addr", argos_spi_get_addr));
 	RUN_TEST("RCONF", test_read_binary("RConf", argos_spi_get_rconf));
+	RUN_TEST("RCONF_RAW", test_read_binary("RConfRaw", argos_spi_get_rconf_raw));
 
 	/* Phase 3: Write commands (ID/ADDR only - don't affect MAC) */
 	LOG_INF("");

@@ -28,51 +28,29 @@ LOG_MODULE_REGISTER(argos_smd_dfu_spi, CONFIG_ARGOS_SMD_DFU_LOG_LEVEL);
 #define DFU_MAGIC_REQUEST     0xAA
 #define DFU_MAGIC_RESPONSE    0x55
 #define DFU_IDLE_PATTERN      0xAA
+#define DFU_BUSY_PATTERN      0xBB   /* Slave is busy (flash write in progress) */
 
-/* Maximum frame sizes */
-#define DFU_MAX_PAYLOAD       250
+/* BUSY pattern retry configuration */
+#define DFU_BUSY_RETRY_COUNT     10   /* Max retries when slave is BUSY */
+#define DFU_BUSY_RETRY_DELAY_MS  20   /* Delay between BUSY re-polls */
+
+/* Maximum frame sizes
+ * Protocol A+ LEN field is 1 byte (uint8_t), so max payload is 255 bytes.
+ * ARGOS_DFU_CHUNK_SIZE must be <= DFU_MAX_PAYLOAD */
+#define DFU_MAX_PAYLOAD       255
 #define DFU_HEADER_SIZE       4    /* magic + seq + cmd/status + len */
 #define DFU_CRC_SIZE          1
 #define DFU_MAX_FRAME_SIZE    (DFU_HEADER_SIZE + DFU_MAX_PAYLOAD + DFU_CRC_SIZE)
+
+/* Compile-time check: ensure CHUNK_SIZE fits in Protocol A+ frame */
+BUILD_ASSERT(ARGOS_DFU_CHUNK_SIZE <= DFU_MAX_PAYLOAD,
+	     "ARGOS_DFU_CHUNK_SIZE exceeds Protocol A+ max payload (255 bytes)");
 
 /* Transaction buffer size (use 64 bytes for short commands, larger for data) */
 #define DFU_TRANSACTION_SIZE  64
 #define DFU_LARGE_TX_SIZE     280
 
-/* Static sequence number for DFU session */
-static uint8_t dfu_seq_num = 0;
-
-/**
- * @brief Calculate CRC-8 CCITT checksum (polynomial 0x07)
- */
-static uint8_t crc8_ccitt(const uint8_t *data, uint16_t len)
-{
-	uint8_t crc = 0x00;
-
-	for (uint16_t i = 0; i < len; i++) {
-		crc ^= data[i];
-		for (uint8_t bit = 0; bit < 8; bit++) {
-			crc = (crc & 0x80) ? ((crc << 1) ^ 0x07) : (crc << 1);
-		}
-	}
-
-	return crc;
-}
-
-/* CRC32 calculation using standard polynomial (same as UART DFU) */
-uint32_t argos_dfu_crc32(const uint8_t *data, size_t len)
-{
-	uint32_t crc = 0xFFFFFFFF;
-
-	for (size_t i = 0; i < len; i++) {
-		crc ^= data[i];
-		for (int j = 0; j < 8; j++) {
-			crc = (crc >> 1) ^ ((crc & 1) ? 0xEDB88320 : 0);
-		}
-	}
-
-	return ~crc;
-}
+/* CRC32 function is now in argos_crc.c (shared with UART DFU) */
 
 /**
  * @brief Low-level SPI transceive wrapper
@@ -88,6 +66,72 @@ static int spi_transceive_dfu(const struct device *dev,
 	struct spi_buf_set rx_set = { .buffers = &spi_rx, .count = 1 };
 
 	return spi_transceive_dt(&cfg->spi, &tx_set, &rx_set);
+}
+
+/**
+ * @brief Check if RX buffer contains a valid response magic (0x55)
+ *
+ * @param rx_buf RX buffer to check
+ * @param len Buffer length
+ * @return true if valid response magic found, false otherwise
+ */
+static bool has_valid_response(const uint8_t *rx_buf, size_t len)
+{
+	/* Check first 8 bytes for response magic */
+	size_t check_len = MIN(len, 8);
+	for (size_t i = 0; i < check_len; i++) {
+		if (rx_buf[i] == DFU_MAGIC_RESPONSE) {
+			return true;  /* Valid response found */
+		}
+	}
+	return false;
+}
+
+/**
+ * @brief Check if we need to re-poll for response
+ *
+ * Returns true when the slave hasn't provided a valid response yet.
+ * This happens in two scenarios:
+ * 1. BUSY pattern (0xBB) - slave is busy with flash operations
+ * 2. Transitional data (0xAA) - slave hasn't processed request yet
+ *
+ * Patterns observed:
+ * - BB BB BB FF FF AA AA AA → BUSY (flash write in progress)
+ * - AA AA AA FF FF AA AA AA → Not ready yet (transitional)
+ *
+ * In both cases, we need to re-poll until we get a valid response (0x55).
+ *
+ * @param rx_buf RX buffer to check
+ * @param len Buffer length
+ * @return true if re-poll needed, false if valid response present
+ */
+static bool needs_response_retry(const uint8_t *rx_buf, size_t len)
+{
+	/* If we have a valid response (0x55), no retry needed */
+	if (has_valid_response(rx_buf, len)) {
+		return false;
+	}
+
+	/* No valid response found - need to retry */
+	return true;
+}
+
+/**
+ * @brief Check if RX buffer contains explicit BUSY pattern (0xBB)
+ *
+ * Used for logging purposes to distinguish BUSY from transitional state.
+ *
+ * @param rx_buf RX buffer to check
+ * @param len Buffer length
+ * @return true if BUSY pattern (BB BB) detected at start
+ */
+static bool is_busy_pattern(const uint8_t *rx_buf, size_t len)
+{
+	if (len < 2) {
+		return false;
+	}
+	return (rx_buf[0] == DFU_BUSY_PATTERN &&
+		rx_buf[1] == DFU_BUSY_PATTERN);
 }
 
 /**
@@ -131,7 +175,7 @@ static int dfu_send_cmd(const struct device *dev, uint8_t cmd,
 	 * Format: [0xAA][SEQ][CMD][LEN][DATA...][CRC8]
 	 * ═══════════════════════════════════════════════════════════════ */
 	tx_buf[idx++] = DFU_MAGIC_REQUEST;     /* Magic */
-	tx_buf[idx++] = dfu_seq_num;           /* Sequence number */
+	tx_buf[idx++] = data->dfu_seq_num;     /* Sequence number */
 	tx_buf[idx++] = cmd;                   /* Command */
 	tx_buf[idx++] = payload_len;           /* Length */
 
@@ -141,7 +185,7 @@ static int dfu_send_cmd(const struct device *dev, uint8_t cmd,
 	}
 
 	/* CRC calculated over: MAGIC + SEQ + CMD + LEN + DATA (include magic) */
-	tx_buf[idx] = crc8_ccitt(tx_buf, idx);
+	tx_buf[idx] = argos_spi_crc8_ccitt(tx_buf, idx);
 	idx++;
 
 	/* Pad to transaction size */
@@ -151,7 +195,7 @@ static int dfu_send_cmd(const struct device *dev, uint8_t cmd,
 	}
 
 	LOG_DBG("TX[cmd=0x%02X seq=%u len=%u]: %02X %02X %02X %02X %02X ...",
-		cmd, dfu_seq_num, payload_len,
+		cmd, data->dfu_seq_num, payload_len,
 		tx_buf[0], tx_buf[1], tx_buf[2], tx_buf[3], tx_buf[4]);
 
 	/* ═══════════════════════════════════════════════════════════════
@@ -176,6 +220,7 @@ static int dfu_send_cmd(const struct device *dev, uint8_t cmd,
 
 	/* ═══════════════════════════════════════════════════════════════
 	 * Step 4: Transaction 2 - Send idle pattern to read response
+	 * With BUSY pattern handling (0xBB = slave is busy with flash)
 	 * ═══════════════════════════════════════════════════════════════ */
 	memset(tx_buf, DFU_IDLE_PATTERN, DFU_TRANSACTION_SIZE);
 	memset(rx_buf, 0, sizeof(rx_buf));
@@ -189,6 +234,54 @@ static int dfu_send_cmd(const struct device *dev, uint8_t cmd,
 	LOG_DBG("RX2: %02X %02X %02X %02X %02X %02X %02X %02X",
 		rx_buf[0], rx_buf[1], rx_buf[2], rx_buf[3],
 		rx_buf[4], rx_buf[5], rx_buf[6], rx_buf[7]);
+
+	/* ═══════════════════════════════════════════════════════════════
+	 * Step 4b: Re-poll until valid response (0x55) received
+	 * The bootloader may send:
+	 *   - BUSY pattern (0xBB) while flash operations in progress
+	 *   - Transitional data (0xAA) when not ready yet
+	 * In both cases, we re-poll until we get a valid response.
+	 * ═══════════════════════════════════════════════════════════════ */
+	int busy_retries = 0;
+	while (needs_response_retry(rx_buf, DFU_TRANSACTION_SIZE) &&
+	       busy_retries < DFU_BUSY_RETRY_COUNT) {
+		if (is_busy_pattern(rx_buf, DFU_TRANSACTION_SIZE)) {
+			LOG_DBG("Slave BUSY (0xBB), re-polling... (retry %d/%d)",
+				busy_retries + 1, DFU_BUSY_RETRY_COUNT);
+		} else {
+			LOG_DBG("No response yet, re-polling... (retry %d/%d)",
+				busy_retries + 1, DFU_BUSY_RETRY_COUNT);
+		}
+
+		k_msleep(DFU_BUSY_RETRY_DELAY_MS);
+
+		/* Re-poll: send idle pattern, read response */
+		memset(tx_buf, DFU_IDLE_PATTERN, DFU_TRANSACTION_SIZE);
+		memset(rx_buf, 0, sizeof(rx_buf));
+		ret = spi_transceive_dfu(dev, tx_buf, rx_buf, DFU_TRANSACTION_SIZE);
+		if (ret < 0) {
+			LOG_ERR("SPI RX failed during re-poll: %d", ret);
+			k_mutex_unlock(&data->lock);
+			return ret;
+		}
+
+		LOG_DBG("RX2 (re-poll): %02X %02X %02X %02X %02X %02X %02X %02X",
+			rx_buf[0], rx_buf[1], rx_buf[2], rx_buf[3],
+			rx_buf[4], rx_buf[5], rx_buf[6], rx_buf[7]);
+
+		busy_retries++;
+	}
+
+	if (busy_retries >= DFU_BUSY_RETRY_COUNT &&
+	    needs_response_retry(rx_buf, DFU_TRANSACTION_SIZE)) {
+		LOG_ERR("No valid response after %d retries", DFU_BUSY_RETRY_COUNT);
+		k_mutex_unlock(&data->lock);
+		return -EBUSY;
+	}
+
+	if (busy_retries > 0) {
+		LOG_DBG("Slave responded after %d re-polls", busy_retries);
+	}
 
 	/* ═══════════════════════════════════════════════════════════════
 	 * Step 5: Parse response frame
@@ -218,7 +311,13 @@ static int dfu_send_cmd(const struct device *dev, uint8_t cmd,
 	uint8_t rsp_len = rx_buf[offset + 3];
 
 	(void)rsp_magic;  /* Verified above */
-	(void)rsp_seq;    /* Could verify matches dfu_seq_num */
+
+	/* Verify sequence number matches request (M4: sequence verification) */
+	if (rsp_seq != data->dfu_seq_num) {
+		LOG_WRN("Sequence mismatch: expected %u, got %u",
+			data->dfu_seq_num, rsp_seq);
+		/* Continue processing - mismatch may indicate missed response */
+	}
 
 	LOG_DBG("Response: magic=0x%02X seq=%u status=0x%02X len=%u",
 		rsp_magic, rsp_seq, rsp_status, rsp_len);
@@ -232,7 +331,7 @@ static int dfu_send_cmd(const struct device *dev, uint8_t cmd,
 
 	/* Verify CRC (calculated over MAGIC + SEQ + STATUS + LEN + DATA, include magic) */
 	size_t crc_len = DFU_HEADER_SIZE + rsp_len;  /* Header (4 bytes) + data */
-	uint8_t expected_crc = crc8_ccitt(&rx_buf[offset], crc_len);  /* Start from magic */
+	uint8_t expected_crc = argos_spi_crc8_ccitt(&rx_buf[offset], crc_len);  /* Start from magic */
 	uint8_t received_crc = rx_buf[offset + DFU_HEADER_SIZE + rsp_len];
 
 	if (expected_crc != received_crc) {
@@ -251,7 +350,7 @@ static int dfu_send_cmd(const struct device *dev, uint8_t cmd,
 	}
 
 	/* Increment sequence number for next command */
-	dfu_seq_num++;
+	data->dfu_seq_num++;
 
 	k_mutex_unlock(&data->lock);
 
@@ -281,7 +380,7 @@ static int dfu_send_with_retry(const struct device *dev, uint8_t cmd,
 		if (argos_is_recoverable((uint8_t)ret) || ret == -EILSEQ) {
 			LOG_WRN("Recoverable error (0x%02X), retry %d/%d",
 				ret, retry + 1, ARGOS_DFU_MAX_RETRIES);
-			k_msleep(50);
+			k_msleep(ARGOS_SPI_RETRY_DELAY_MS);
 			continue;
 		}
 
@@ -317,7 +416,8 @@ int argos_dfu_enter(const struct device *dev)
 	LOG_INF("DFU enter command sent, waiting for device to reset to bootloader...");
 
 	/* Reset DFU sequence number for new session */
-	dfu_seq_num = 0;
+	struct argos_spi_data *data = dev->data;
+	data->dfu_seq_num = 0;
 
 	/* Wait for device to reset and bootloader to start */
 	k_msleep(ARGOS_DFU_RESET_WAIT_MS);
@@ -367,7 +467,7 @@ int argos_dfu_wait_ready(const struct device *dev, k_timeout_t timeout)
 			return 0;
 		}
 
-		k_msleep(50);
+		k_msleep(ARGOS_SPI_RETRY_DELAY_MS);
 	}
 
 	LOG_ERR("DFU bootloader not responding after timeout");
@@ -698,7 +798,7 @@ int argos_dfu_get_extended_status(const struct device *dev,
 	return 0;
 }
 
-int argos_dfu_get_status_spi(const struct device *dev, struct argos_dfu_status *status_out)
+int argos_dfu_get_status_spi(const struct device *dev, struct argos_dfu_spi_status *status_out)
 {
 	struct argos_dfu_extended_status ext_status;
 	int ret;
@@ -712,32 +812,32 @@ int argos_dfu_get_status_spi(const struct device *dev, struct argos_dfu_status *
 		return ret;
 	}
 
-	/* Map extended status to legacy format */
+	/* Map extended status to SPI DFU state */
 	switch (ext_status.dfu_op_state) {
 	case ARGOS_DFU_OP_IDLE:
 		status_out->state = ext_status.session_active ?
-				    ARGOS_DFU_STATE_BOOTLOADER : ARGOS_DFU_STATE_IDLE;
+				    ARGOS_DFU_SPI_STATE_BOOTLOADER : ARGOS_DFU_SPI_STATE_IDLE;
 		break;
 	case ARGOS_DFU_OP_ERASING:
-		status_out->state = ARGOS_DFU_STATE_ERASING;
+		status_out->state = ARGOS_DFU_SPI_STATE_ERASING;
 		break;
 	case ARGOS_DFU_OP_WRITING:
-		status_out->state = ARGOS_DFU_STATE_WRITING;
+		status_out->state = ARGOS_DFU_SPI_STATE_WRITING;
 		break;
 	case ARGOS_DFU_OP_VERIFYING:
-		status_out->state = ARGOS_DFU_STATE_VERIFYING;
+		status_out->state = ARGOS_DFU_SPI_STATE_VERIFYING;
 		break;
 	case ARGOS_DFU_OP_READY:
-		status_out->state = ARGOS_DFU_STATE_BOOTLOADER;
+		status_out->state = ARGOS_DFU_SPI_STATE_BOOTLOADER;
 		break;
 	case ARGOS_DFU_OP_COMPLETE:
-		status_out->state = ARGOS_DFU_STATE_COMPLETE;
+		status_out->state = ARGOS_DFU_SPI_STATE_COMPLETE;
 		break;
 	case ARGOS_DFU_OP_ERROR:
-		status_out->state = ARGOS_DFU_STATE_ERROR;
+		status_out->state = ARGOS_DFU_SPI_STATE_ERROR;
 		break;
 	default:
-		status_out->state = ARGOS_DFU_STATE_IDLE;
+		status_out->state = ARGOS_DFU_SPI_STATE_IDLE;
 		break;
 	}
 
@@ -934,7 +1034,7 @@ int argos_spi_firmware_update(const struct device *dev,
 	}
 
 	/* Verify device is responding in app mode */
-	k_msleep(500);
+	k_msleep(ARGOS_SPI_BOOT_DELAY_MS);
 	ret = argos_spi_ping(dev);
 	if (ret < 0) {
 		LOG_WRN("Device not responding after update (may need manual reset)");

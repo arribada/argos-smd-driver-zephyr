@@ -128,7 +128,9 @@ int send_command(const struct device *dev, uint8_t *command, const uint8_t lengt
 		uart_poll_out(cfg->uart_dev, (char)command[i]);
 	}
 
+	/* Send \r\n terminator as required by bootloader protocol */
 	uart_poll_out(cfg->uart_dev, '\r');
+	uart_poll_out(cfg->uart_dev, '\n');
 
 	return 0;
 }
@@ -198,6 +200,12 @@ int argos_read_radioconf(const struct device *dev)
 {
 	LOG_INF("Request Argos configuration");
 	return send_read_cmd(dev, AT_RCONF);
+}
+
+int argos_read_radioconf_raw(const struct device *dev)
+{
+	LOG_INF("Request Argos raw radio configuration");
+	return send_read_cmd(dev, AT_RCONFRAW);
 }
 
 int argos_read_prepass_enable(const struct device *dev)

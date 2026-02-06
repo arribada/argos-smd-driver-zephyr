@@ -46,9 +46,6 @@ extern "C" {
 /* Maximum frame size */
 #define ARGOS_SPI_MAX_FRAME_SIZE  (ARGOS_SPI_HEADER_SIZE + ARGOS_SPI_MAX_PAYLOAD + ARGOS_SPI_CRC_SIZE)
 
-/* Timeout for SPI operations (ms) */
-#define ARGOS_SPI_TIMEOUT_MS      5000
-
 /*
  * Pipelined Protocol Constants
  * Each SPI transaction is fixed 64 bytes (full-duplex)
@@ -67,7 +64,6 @@ extern "C" {
  */
 #define ARGOS_TIMING_STANDARD_MS      30    /* Standard commands */
 #define ARGOS_TIMING_WRITE_MS         100   /* Flash write: up to 50ms write + 10ms detect + margin */
-#define ARGOS_TIMING_TX_DATA_MS       100   /* TX data commands */
 #define ARGOS_TIMING_ERASE_MS         3000  /* CRITICAL! Flash erase */
 #define ARGOS_TIMING_RESET_MS         100   /* Reset/jump commands */
 #define ARGOS_TIMING_POLL_MS          500   /* Polling interval (increased to avoid SPI conflicts during RF TX) */
@@ -76,11 +72,17 @@ extern "C" {
 #define ARGOS_SPI_PIPELINE_DELAY_MS   ARGOS_TIMING_STANDARD_MS
 #define ARGOS_SPI_FLASH_DELAY_MS      200   /* Flash write: page erase + rewrite ~50ms */
 
+/* Inter-transaction delays (internal use) */
+#define ARGOS_SPI_INTER_TX_DELAY_MS   15    /* Wait for STM32 DMA re-arm between transactions */
+#define ARGOS_SPI_RETRY_DELAY_MS      50    /* Delay between command retries */
+#define ARGOS_SPI_BOOT_DELAY_MS       500   /* Wait for module boot after reset */
+#define ARGOS_SPI_DETECT_TIMEOUT_MS   10    /* SPI activity detection timeout */
+#define ARGOS_SPI_POST_TX_DELAY_MS    100   /* Delay after TX for async processing */
+
 /*
  * Application Commands (0x00-0x2A)
  */
 #define ARGOS_SPI_CMD_NOP               0x00  /* No operation (get previous response) */
-#define ARGOS_SPI_CMD_NONE              0x00  /* Alias for CMD_NOP */
 #define ARGOS_SPI_CMD_READ              0x01  /* Generic read */
 #define ARGOS_SPI_CMD_PING              0x02  /* Ping */
 #define ARGOS_SPI_CMD_MAC_STATUS        0x03  /* MAC status */
@@ -123,6 +125,7 @@ extern "C" {
 #define ARGOS_SPI_CMD_READ_TCXO_WU      0x28  /* TCXO wake-up */
 #define ARGOS_SPI_CMD_WRITE_TCXOWU_REQ  0x29  /* Write TCXO request */
 #define ARGOS_SPI_CMD_WRITE_TCXOWU      0x2A  /* Write TCXO */
+#define ARGOS_SPI_CMD_READ_RCONF_RAW    0x2B  /* Raw radio config (16 bytes from flash) */
 
 /*
  * DFU Bootloader Commands (0x30-0x3F)
@@ -243,29 +246,19 @@ static inline bool argos_is_tx_pending(uint8_t mac_status)
 	return (mac_status == MAC_TX_IN_PROGRESS);
 }
 
-/* Legacy aliases for backward compatibility */
+/* Legacy alias for backward compatibility (used by samples) */
 #define ARGOS_SPI_RSP_OK          PROT_OK
-#define ARGOS_SPI_RSP_ERROR       PROT_ERROR
-#define ARGOS_SPI_RSP_CRC_ERROR   PROT_CRC_ERROR
-#define ARGOS_SPI_RSP_INVALID_CMD PROT_INVALID_CMD
-#define ARGOS_SPI_RSP_INVALID_LEN PROT_SIZE_ERROR
-#define ARGOS_SPI_RSP_BUSY        PROT_BUSY
-#define ARGOS_SPI_RSP_SEQ_ERROR   PROT_SEQ_ERROR
 
 /**
- * @brief SPI Protocol A+ Request Frame
+ * @brief SPI Protocol A+ Frame Format (both Request and Response)
  *
- * | MAGIC (0xAA) | SEQ | CMD | LEN | DATA[0..LEN-1] | CRC8 |
- * |    1 byte    |  1  |  1  |  1  |    0-250       |   1  |
+ * Request:  | MAGIC (0xAA) | SEQ | CMD    | LEN | DATA[0..LEN-1] | CRC8 |
+ * Response: | MAGIC (0x55) | SEQ | STATUS | LEN | DATA[0..LEN-1] | CRC8 |
+ *           |    1 byte    |  1  |   1    |  1  |    0-250       |   1  |
+ *
+ * Note: The driver uses raw uint8_t buffers internally. This struct is
+ * provided for documentation and type-safe response parsing.
  */
-struct argos_spi_request {
-	uint8_t magic;
-	uint8_t seq;
-	uint8_t cmd;
-	uint8_t len;
-	uint8_t data[ARGOS_SPI_MAX_PAYLOAD];
-	uint8_t crc;
-};
 
 /**
  * @brief SPI Protocol A+ Response Frame
@@ -295,7 +288,8 @@ struct argos_spi_config {
  * @brief Argos SMD SPI device data
  */
 struct argos_spi_data {
-	uint8_t seq_num;                 /* Current sequence number */
+	uint8_t seq_num;                 /* Current sequence number (app mode) */
+	uint8_t dfu_seq_num;             /* DFU sequence number (bootloader mode) */
 	uint8_t tx_buf[ARGOS_SPI_TRANSACTION_SIZE];
 	uint8_t rx_buf[ARGOS_SPI_TRANSACTION_SIZE];
 	struct k_mutex lock;
@@ -395,65 +389,6 @@ int argos_spi_reset(const struct device *dev);
  * @return 0 on success, negative errno on failure
  */
 int argos_spi_diagnostic(const struct device *dev);
-
-/**
- * @brief Raw SPI transaction for bootloader DFU (no Protocol A+ framing)
- *
- * The STM32 bootloader expects raw commands without Protocol A+ framing:
- * - TX: [CMD] [PAYLOAD...]
- * - RX: [STATUS] [RESPONSE_DATA...]
- *
- * This function handles the timing between TX and RX phases (10-20ms delay)
- * required for the bootloader to process the command.
- *
- * @param dev Pointer to device structure
- * @param cmd Command byte (0x30-0x3F for DFU commands)
- * @param tx_data Pointer to payload data (can be NULL if tx_len is 0)
- * @param tx_len Length of payload data
- * @param rx_data Buffer to receive response data (can be NULL)
- * @param rx_len Pointer to expected/received response data length
- * @param status Pointer to receive DFU status code
- * @return 0 on success, negative errno on failure
- */
-int argos_spi_transact_raw(const struct device *dev, uint8_t cmd,
-			   const uint8_t *tx_data, size_t tx_len,
-			   uint8_t *rx_data, size_t *rx_len, uint8_t *status);
-
-/**
- * @brief Raw SPI transaction with custom timeout for bootloader DFU
- *
- * Same as argos_spi_transact_raw() but with configurable timeout.
- * Use this for long operations like ERASE which can take 2-3 seconds.
- *
- * @param dev Pointer to device structure
- * @param cmd Command byte (0x30-0x3F for DFU commands)
- * @param tx_data Pointer to payload data (can be NULL if tx_len is 0)
- * @param tx_len Length of payload data
- * @param rx_data Buffer to receive response data (can be NULL)
- * @param rx_len Pointer to expected/received response data length
- * @param status Pointer to receive DFU status code
- * @param timeout_ms Timeout in milliseconds to wait for operation
- * @return 0 on success, negative errno on failure
- */
-int argos_spi_transact_raw_timeout(const struct device *dev, uint8_t cmd,
-				   const uint8_t *tx_data, size_t tx_len,
-				   uint8_t *rx_data, size_t *rx_len, uint8_t *status,
-				   uint32_t timeout_ms);
-
-/**
- * @brief Raw SPI send-only for bootloader DFU (no response expected)
- *
- * Used for commands that cause immediate reset (RESET, JUMP) where
- * no response can be read.
- *
- * @param dev Pointer to device structure
- * @param cmd Command byte
- * @param tx_data Pointer to payload data (can be NULL)
- * @param tx_len Length of payload data
- * @return 0 on success, negative errno on failure
- */
-int argos_spi_send_only_raw(const struct device *dev, uint8_t cmd,
-			    const uint8_t *tx_data, size_t tx_len);
 
 /*
  * High-level API functions (like UART driver)
@@ -578,6 +513,18 @@ int argos_spi_set_kmac(const struct device *dev, uint8_t kmac);
 int argos_spi_get_mac_status(const struct device *dev, uint8_t *mac_status);
 
 /**
+ * @brief Get SPI MAC state (CMD 0x27)
+ *
+ * Returns internal SPI MAC state for debugging.
+ *
+ * @param dev Pointer to device structure
+ * @param state Buffer to receive state (2 bytes minimum)
+ * @param state_len Pointer to buffer size, updated with actual length
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_spimac_state(const struct device *dev, uint8_t *state, size_t *state_len);
+
+/**
  * @brief Wait for TX completion after CMD_WRITE_TX (0x16)
  *
  * Polls MAC status (CMD 0x03) until TX_DONE/TXACK_DONE or error.
@@ -618,6 +565,68 @@ int argos_spi_write_tx(const struct device *dev, const uint8_t *data, size_t len
  * @return 0 on success, negative errno on failure
  */
 int argos_spi_sync(const struct device *dev);
+
+/**
+ * @brief Get low power mode setting
+ *
+ * @param dev Pointer to device structure
+ * @param lpm Pointer to receive LPM value (0=NONE, 1=SLEEP, 2=STOP, 3=STANDBY, 4=SHUTDOWN)
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_lpm(const struct device *dev, uint8_t *lpm);
+
+/**
+ * @brief Set low power mode
+ *
+ * @param dev Pointer to device structure
+ * @param lpm LPM value (0=NONE, 1=SLEEP, 2=STOP, 3=STANDBY, 4=SHUTDOWN)
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_set_lpm(const struct device *dev, uint8_t lpm);
+
+/**
+ * @brief Get TCXO warmup timer value
+ *
+ * @param dev Pointer to device structure
+ * @param tcxo_wu Buffer to receive TCXO warmup value
+ * @param tcxo_len Pointer to buffer size, updated with actual length
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_tcxo_wu(const struct device *dev, uint8_t *tcxo_wu, size_t *tcxo_len);
+
+/**
+ * @brief Set TCXO warmup timer value
+ *
+ * @param dev Pointer to device structure
+ * @param tcxo_wu TCXO warmup value data
+ * @param tcxo_len Length of TCXO data
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_set_tcxo_wu(const struct device *dev, const uint8_t *tcxo_wu, size_t tcxo_len);
+
+/**
+ * @brief Save radio configuration to NVM
+ *
+ * Persists the current radio configuration to non-volatile memory.
+ *
+ * @param dev Pointer to device structure
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_save_rconf(const struct device *dev);
+
+/**
+ * @brief Get raw radio configuration (16 bytes directly from flash)
+ *
+ * Unlike argos_spi_get_rconf() which returns the decoded KNS_CFG_radio_t
+ * structure (12 bytes), this function returns the raw 16 bytes stored
+ * in flash without any decoding.
+ *
+ * @param dev Pointer to device structure
+ * @param rconf_raw Buffer to receive raw radio config (16 bytes minimum)
+ * @param rconf_len Pointer to buffer size, updated with actual length (16)
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_rconf_raw(const struct device *dev, uint8_t *rconf_raw, size_t *rconf_len);
 
 #ifdef __cplusplus
 }

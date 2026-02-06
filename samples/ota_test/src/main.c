@@ -184,45 +184,43 @@ static int test_bootloader_ping(const struct device *dev)
 
 /* ==================== DFU SESSION TESTS ==================== */
 
-static int test_dfu_start(const struct device *dev)
+static int test_dfu_erase(const struct device *dev)
 {
-	LOG_INF("--- Test: DFU START ---");
+	LOG_INF("--- Test: DFU ERASE ---");
 
 	/* Ensure we're in bootloader mode */
 	argos_wait_bootloader_ready(dev, K_SECONDS(5));
 
-	/* Calculate real CRC32 */
-	uint32_t crc = argos_dfu_crc32(TEST_FW_IMAGE, TEST_FW_SIZE);
-
-	int ret = argos_dfu_start(dev, TEST_FW_SIZE, crc);
+	int ret = argos_dfu_erase(dev);
 	if (ret == 0) {
-		LOG_INF("RESULT: PASS - DFU session started");
+		LOG_INF("RESULT: PASS - Flash erased successfully");
 	} else {
-		LOG_ERR("RESULT: FAIL - DFU start failed: %d", ret);
+		LOG_ERR("RESULT: FAIL - Erase failed: %d", ret);
 	}
 
 	return ret;
 }
 
-static int test_dfu_send_single_chunk(const struct device *dev)
+static int test_dfu_write_single_chunk(const struct device *dev)
 {
-	LOG_INF("--- Test: SEND SINGLE CHUNK ---");
+	LOG_INF("--- Test: WRITE SINGLE CHUNK ---");
 
-	/* Start a DFU session first */
-	uint32_t crc = argos_dfu_crc32(TEST_FW_IMAGE, TEST_FW_SIZE);
-	int ret = argos_dfu_start(dev, TEST_FW_SIZE, crc);
+	/* Ensure we're in bootloader mode and erase first */
+	argos_wait_bootloader_ready(dev, K_SECONDS(5));
+
+	int ret = argos_dfu_erase(dev);
 	if (ret < 0) {
-		LOG_ERR("RESULT: FAIL - Couldn't start DFU session: %d", ret);
+		LOG_ERR("RESULT: FAIL - Couldn't erase flash: %d", ret);
 		return ret;
 	}
 
-	/* Send first chunk */
+	/* Write first chunk at APP base address */
 	size_t chunk_size = MIN(ARGOS_DFU_CHUNK_SIZE, TEST_FW_SIZE);
-	ret = argos_dfu_send_chunk(dev, TEST_FW_IMAGE, chunk_size);
+	ret = argos_dfu_write(dev, ARGOS_DFU_APP_BASE, TEST_FW_IMAGE, chunk_size);
 	if (ret == 0) {
-		LOG_INF("RESULT: PASS - Single chunk sent successfully");
+		LOG_INF("RESULT: PASS - Single chunk written at 0x%08X", ARGOS_DFU_APP_BASE);
 	} else {
-		LOG_ERR("RESULT: FAIL - Chunk send failed: %d", ret);
+		LOG_ERR("RESULT: FAIL - Write failed: %d", ret);
 	}
 
 	/* Abort the session */
@@ -238,10 +236,10 @@ static int test_dfu_abort(const struct device *dev)
 	/* Ensure bootloader mode */
 	argos_wait_bootloader_ready(dev, K_SECONDS(5));
 
-	/* Start a DFU session */
-	int ret = argos_dfu_start(dev, 1024, 0x12345678);
+	/* Start a DFU session (erase) */
+	int ret = argos_dfu_erase(dev);
 	if (ret < 0) {
-		LOG_WRN("DFU start (for abort test) failed: %d", ret);
+		LOG_WRN("DFU erase (for abort test) failed: %d", ret);
 	}
 
 	/* Abort it */
@@ -284,30 +282,32 @@ static int test_invalid_crc(const struct device *dev)
 	argos_enter_bootloader(dev);
 	argos_wait_bootloader_ready(dev, K_SECONDS(10));
 
-	/* Start with intentionally wrong CRC */
-	int ret = argos_dfu_start(dev, TEST_FW_SIZE, 0xDEADBEEF);
+	/* Erase flash first */
+	int ret = argos_dfu_erase(dev);
 	if (ret < 0) {
-		LOG_INF("RESULT: PASS - DFU start with bad CRC rejected immediately");
-		return 0;
+		LOG_ERR("RESULT: FAIL - Erase failed: %d", ret);
+		return ret;
 	}
 
-	/* If it was accepted, send data and try to finish */
+	/* Write all data */
+	uint32_t addr = ARGOS_DFU_APP_BASE;
 	size_t offset = 0;
 	while (offset < TEST_FW_SIZE) {
 		size_t chunk_len = MIN(ARGOS_DFU_CHUNK_SIZE, TEST_FW_SIZE - offset);
-		ret = argos_dfu_send_chunk(dev, &TEST_FW_IMAGE[offset], chunk_len);
+		ret = argos_dfu_write(dev, addr, &TEST_FW_IMAGE[offset], chunk_len);
 		if (ret < 0) {
-			LOG_INF("RESULT: PASS - Chunk rejected during transfer");
+			LOG_INF("RESULT: PASS - Write rejected during transfer");
 			argos_dfu_abort(dev);
 			return 0;
 		}
+		addr += chunk_len;
 		offset += chunk_len;
 	}
 
-	/* Try to finish - should fail due to CRC mismatch */
-	ret = argos_dfu_finish(dev);
+	/* Try to verify with intentionally wrong CRC - should fail */
+	ret = argos_dfu_verify(dev, 0xDEADBEEF);
 	if (ret < 0) {
-		LOG_INF("RESULT: PASS - DFU finish with bad CRC rejected");
+		LOG_INF("RESULT: PASS - Verify with bad CRC rejected");
 		argos_dfu_abort(dev);
 		return 0;
 	}
@@ -324,19 +324,18 @@ static int test_chunk_too_large(const struct device *dev)
 	argos_enter_bootloader(dev);
 	argos_wait_bootloader_ready(dev, K_SECONDS(10));
 
-	/* Start DFU session */
-	uint32_t crc = argos_dfu_crc32(TEST_FW_IMAGE, TEST_FW_SIZE);
-	int ret = argos_dfu_start(dev, TEST_FW_SIZE, crc);
+	/* Erase flash */
+	int ret = argos_dfu_erase(dev);
 	if (ret < 0) {
-		LOG_ERR("RESULT: FAIL - Couldn't start DFU: %d", ret);
+		LOG_ERR("RESULT: FAIL - Couldn't erase: %d", ret);
 		return ret;
 	}
 
-	/* Try to send oversized chunk */
+	/* Try to write oversized chunk */
 	uint8_t large_chunk[ARGOS_DFU_CHUNK_SIZE + 1];
 	memset(large_chunk, 0xAA, sizeof(large_chunk));
 
-	ret = argos_dfu_send_chunk(dev, large_chunk, sizeof(large_chunk));
+	ret = argos_dfu_write(dev, ARGOS_DFU_APP_BASE, large_chunk, sizeof(large_chunk));
 	if (ret < 0) {
 		LOG_INF("RESULT: PASS - Oversized chunk rejected (error: %d)", ret);
 		argos_dfu_abort(dev);
@@ -348,22 +347,26 @@ static int test_chunk_too_large(const struct device *dev)
 	return -1;
 }
 
-static int test_dfu_without_start(const struct device *dev)
+static int test_dfu_without_erase(const struct device *dev)
 {
-	LOG_INF("--- Test: DFU DATA WITHOUT START (should fail) ---");
+	LOG_INF("--- Test: DFU WRITE WITHOUT ERASE (should fail) ---");
 
-	/* Ensure bootloader mode */
+	/* Enter bootloader but don't erase */
 	argos_enter_bootloader(dev);
 	argos_wait_bootloader_ready(dev, K_SECONDS(10));
 
-	/* Try to send chunk without starting DFU session */
-	int ret = argos_dfu_send_chunk(dev, TEST_FW_IMAGE, 64);
+	/* Abort any previous session to ensure clean state */
+	argos_dfu_abort(dev);
+	k_msleep(100);
+
+	/* Try to write without erasing first - bootloader should reject */
+	int ret = argos_dfu_write(dev, ARGOS_DFU_APP_BASE, TEST_FW_IMAGE, 64);
 	if (ret < 0) {
-		LOG_INF("RESULT: PASS - Chunk without session rejected (error: %d)", ret);
+		LOG_INF("RESULT: PASS - Write without erase rejected (error: %d)", ret);
 		return 0;
 	}
 
-	LOG_ERR("RESULT: FAIL - Chunk without session should have been rejected!");
+	LOG_ERR("RESULT: FAIL - Write without erase should have been rejected!");
 	return -1;
 }
 
@@ -457,10 +460,10 @@ int main(void)
 	LOG_INF("======================================");
 	LOG_INF("");
 
-	errors += (test_dfu_start(argos) != 0) ? 1 : 0;
+	errors += (test_dfu_erase(argos) != 0) ? 1 : 0;
 	k_msleep(500);
 
-	errors += (test_dfu_send_single_chunk(argos) != 0) ? 1 : 0;
+	errors += (test_dfu_write_single_chunk(argos) != 0) ? 1 : 0;
 	k_msleep(500);
 
 	errors += (test_dfu_abort(argos) != 0) ? 1 : 0;
@@ -481,7 +484,7 @@ int main(void)
 	errors += (test_chunk_too_large(argos) != 0) ? 1 : 0;
 	k_msleep(500);
 
-	errors += (test_dfu_without_start(argos) != 0) ? 1 : 0;
+	errors += (test_dfu_without_erase(argos) != 0) ? 1 : 0;
 	k_msleep(500);
 	*/
 

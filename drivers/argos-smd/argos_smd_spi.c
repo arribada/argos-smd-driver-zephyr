@@ -277,7 +277,7 @@ static int argos_spi_transact_internal(const struct device *dev, uint8_t cmd,
 	 * Wait for STM32 to be ready from previous transaction.
 	 * STM32 needs: detection timeout (10ms) + processing + DMA re-arm
 	 */
-	k_msleep(15);
+	k_msleep(ARGOS_SPI_INTER_TX_DELAY_MS);
 
 	/*
 	 * Pipelined Protocol:
@@ -311,41 +311,47 @@ static int argos_spi_transact_internal(const struct device *dev, uint8_t cmd,
 	/* Build NOP frame to retrieve response */
 	data->seq_num++;
 
-retry_nop:
-	build_request_frame(data->tx_buf, data->seq_num, ARGOS_SPI_CMD_NOP, NULL, 0);
+	/*
+	 * Transaction 2+: Send NOP, receive response
+	 * Retry loop for flash write operations when slave is not ready
+	 */
+	do {
+		build_request_frame(data->tx_buf, data->seq_num, ARGOS_SPI_CMD_NOP, NULL, 0);
 
-	LOG_DBG("TX2 [NOP seq %u]: %02X %02X %02X %02X %02X",
-		data->seq_num,
-		data->tx_buf[0], data->tx_buf[1], data->tx_buf[2],
-		data->tx_buf[3], data->tx_buf[4]);
+		LOG_DBG("TX2 [NOP seq %u]: %02X %02X %02X %02X %02X",
+			data->seq_num,
+			data->tx_buf[0], data->tx_buf[1], data->tx_buf[2],
+			data->tx_buf[3], data->tx_buf[4]);
 
-	/* Transaction 2: Send NOP, receive response */
-	memset(data->rx_buf, 0, sizeof(data->rx_buf));
-	ret = spi_transaction_64(&cfg->spi, data->tx_buf, data->rx_buf);
-	if (ret < 0) {
-		LOG_ERR("Transaction 2 failed: %d", ret);
-		goto unlock;
-	}
-
-	LOG_DBG("RX2: %02X %02X %02X %02X %02X %02X %02X %02X",
-		data->rx_buf[0], data->rx_buf[1], data->rx_buf[2], data->rx_buf[3],
-		data->rx_buf[4], data->rx_buf[5], data->rx_buf[6], data->rx_buf[7]);
-
-	/* For flash write operations, retry if slave is not ready (IDLE or BUSY) */
-	if (is_flash_write && is_slave_not_ready(data->rx_buf, 8) &&
-	    retries < FLASH_WRITE_MAX_RETRIES) {
-		retries++;
-		if (is_rx_all_busy(data->rx_buf, 8)) {
-			LOG_DBG("Slave BUSY (processing), retry %d/%d",
-				retries, FLASH_WRITE_MAX_RETRIES);
-		} else {
-			LOG_DBG("Slave IDLE (not ready), retry %d/%d",
-				retries, FLASH_WRITE_MAX_RETRIES);
+		/* Transaction 2: Send NOP, receive response */
+		memset(data->rx_buf, 0, sizeof(data->rx_buf));
+		ret = spi_transaction_64(&cfg->spi, data->tx_buf, data->rx_buf);
+		if (ret < 0) {
+			LOG_ERR("Transaction 2 failed: %d", ret);
+			goto unlock;
 		}
-		k_msleep(FLASH_WRITE_RETRY_DELAY_MS);
-		data->seq_num++;
-		goto retry_nop;
-	}
+
+		LOG_DBG("RX2: %02X %02X %02X %02X %02X %02X %02X %02X",
+			data->rx_buf[0], data->rx_buf[1], data->rx_buf[2], data->rx_buf[3],
+			data->rx_buf[4], data->rx_buf[5], data->rx_buf[6], data->rx_buf[7]);
+
+		/* For flash write operations, retry if slave is not ready (IDLE or BUSY) */
+		if (is_flash_write && is_slave_not_ready(data->rx_buf, 8) &&
+		    retries < FLASH_WRITE_MAX_RETRIES) {
+			retries++;
+			if (is_rx_all_busy(data->rx_buf, 8)) {
+				LOG_DBG("Slave BUSY (processing), retry %d/%d",
+					retries, FLASH_WRITE_MAX_RETRIES);
+			} else {
+				LOG_DBG("Slave IDLE (not ready), retry %d/%d",
+					retries, FLASH_WRITE_MAX_RETRIES);
+			}
+			k_msleep(FLASH_WRITE_RETRY_DELAY_MS);
+			data->seq_num++;
+			continue;  /* Retry NOP transaction */
+		}
+		break;  /* Got valid response or max retries reached */
+	} while (retries <= FLASH_WRITE_MAX_RETRIES);
 
 	/* Parse response */
 	struct argos_spi_response resp;
@@ -390,6 +396,61 @@ int argos_spi_transact(const struct device *dev, uint8_t cmd,
 					   ARGOS_SPI_PIPELINE_DELAY_MS);
 }
 
+/**
+ * @brief 2-phase write helper for STM32 flash write operations
+ *
+ * The STM32 firmware requires a 2-phase protocol for write operations:
+ * 1. Transaction 1: Send *_REQ command to prepare STM32 RX buffer
+ * 2. Transaction 2: Send WRITE_* command with actual data
+ *
+ * @param dev Pointer to device structure
+ * @param req_cmd Request command code (e.g., ARGOS_SPI_CMD_WRITE_LPM_REQ)
+ * @param write_cmd Write command code (e.g., ARGOS_SPI_CMD_WRITE_LPM)
+ * @param data Data to write
+ * @param len Length of data
+ * @return 0 on success, negative errno on failure
+ */
+static int argos_spi_write_2phase(const struct device *dev,
+				  uint8_t req_cmd, uint8_t write_cmd,
+				  const uint8_t *data, size_t len)
+{
+	uint8_t status;
+	int ret;
+
+	LOG_DBG("2-phase write: REQ=0x%02X, WRITE=0x%02X, len=%zu",
+		req_cmd, write_cmd, len);
+
+	/* Phase 1: Send REQ command to prepare STM32 for data reception */
+	ret = argos_spi_transact(dev, req_cmd, NULL, 0, NULL, NULL, &status);
+	if (ret < 0) {
+		LOG_ERR("Phase 1 (REQ 0x%02X) transaction failed: %d", req_cmd, ret);
+		return ret;
+	}
+	if (status != PROT_OK) {
+		LOG_ERR("Phase 1 (REQ 0x%02X) rejected: status 0x%02X", req_cmd, status);
+		return -EIO;
+	}
+
+	/* Inter-transaction delay for STM32 to prepare RX buffer */
+	k_msleep(1);
+
+	/* Phase 2: Send WRITE command with data (use flash delay for NVM write) */
+	ret = argos_spi_transact_internal(dev, write_cmd, data, len,
+					  NULL, NULL, &status,
+					  ARGOS_SPI_FLASH_DELAY_MS);
+	if (ret < 0) {
+		LOG_ERR("Phase 2 (WRITE 0x%02X) transaction failed: %d", write_cmd, ret);
+		return ret;
+	}
+	if (status != PROT_OK) {
+		LOG_ERR("Phase 2 (WRITE 0x%02X) failed: status 0x%02X", write_cmd, status);
+		return -EIO;
+	}
+
+	LOG_DBG("2-phase write completed successfully");
+	return 0;
+}
+
 int argos_spi_send_only(const struct device *dev, uint8_t cmd,
 			 const uint8_t *tx_data, size_t tx_len)
 {
@@ -415,207 +476,6 @@ int argos_spi_send_only(const struct device *dev, uint8_t cmd,
 		LOG_ERR("SPI transaction failed: %d", ret);
 	} else {
 		data->seq_num++;
-	}
-
-	k_mutex_unlock(&data->lock);
-	return ret;
-}
-
-int argos_spi_transact_raw(const struct device *dev, uint8_t cmd,
-			   const uint8_t *tx_data, size_t tx_len,
-			   uint8_t *rx_data, size_t *rx_len, uint8_t *status)
-{
-	const struct argos_spi_config *cfg = dev->config;
-	struct argos_spi_data *data = dev->data;
-	int ret;
-
-	if (tx_len > ARGOS_SPI_MAX_PAYLOAD) {
-		LOG_ERR("TX payload too large: %zu", tx_len);
-		return -EINVAL;
-	}
-
-	k_mutex_lock(&data->lock, K_FOREVER);
-
-	/* Build raw TX frame: [CMD] [PAYLOAD...] padded to 64 bytes */
-	memset(data->tx_buf, 0xFF, ARGOS_SPI_TRANSACTION_SIZE);
-	data->tx_buf[0] = cmd;
-	if (tx_data && tx_len > 0) {
-		memcpy(&data->tx_buf[1], tx_data, tx_len);
-	}
-
-	LOG_DBG("RAW TX: cmd=0x%02X, len=%zu", cmd, tx_len);
-	LOG_HEXDUMP_DBG(data->tx_buf, MIN(16, 1 + tx_len), "RAW TX frame");
-
-	/* Transaction 1: Send command */
-	memset(data->rx_buf, 0, sizeof(data->rx_buf));
-	ret = spi_transaction_64(&cfg->spi, data->tx_buf, data->rx_buf);
-	if (ret < 0) {
-		LOG_ERR("SPI transaction 1 failed: %d", ret);
-		goto unlock;
-	}
-
-	/* Delay for processing */
-	k_msleep(ARGOS_SPI_PIPELINE_DELAY_MS);
-
-	/* Transaction 2: Send dummy to get response */
-	memset(data->tx_buf, 0xFF, ARGOS_SPI_TRANSACTION_SIZE);
-	memset(data->rx_buf, 0, sizeof(data->rx_buf));
-	ret = spi_transaction_64(&cfg->spi, data->tx_buf, data->rx_buf);
-	if (ret < 0) {
-		LOG_ERR("SPI transaction 2 failed: %d", ret);
-		goto unlock;
-	}
-
-	LOG_HEXDUMP_DBG(data->rx_buf, 16, "RAW RX");
-
-	/* Parse raw response: [STATUS] [DATA...] */
-	/* Skip leading 0xAA (idle), 0xBB (busy), or 0xFF (padding) */
-	size_t offset = 0;
-	while (offset < ARGOS_SPI_TRANSACTION_SIZE &&
-	       (data->rx_buf[offset] == ARGOS_SPI_IDLE_PATTERN ||
-	        data->rx_buf[offset] == ARGOS_SPI_BUSY_PATTERN ||
-	        data->rx_buf[offset] == 0xFF)) {
-		offset++;
-	}
-
-	if (offset >= ARGOS_SPI_TRANSACTION_SIZE) {
-		if (is_rx_all_busy(data->rx_buf, 8)) {
-			LOG_ERR("Slave still BUSY - timeout too short");
-		} else {
-			LOG_ERR("No valid response in raw transaction");
-		}
-		ret = -ENODATA;
-		goto unlock;
-	}
-
-	*status = data->rx_buf[offset];
-	LOG_DBG("RAW RX: status=0x%02X at offset %zu", *status, offset);
-
-	if (rx_data && rx_len && *rx_len > 0) {
-		size_t avail = ARGOS_SPI_TRANSACTION_SIZE - offset - 1;
-		size_t copy_len = MIN(*rx_len, avail);
-		memcpy(rx_data, &data->rx_buf[offset + 1], copy_len);
-		*rx_len = copy_len;
-	}
-
-	ret = 0;
-
-unlock:
-	k_mutex_unlock(&data->lock);
-	return ret;
-}
-
-int argos_spi_transact_raw_timeout(const struct device *dev, uint8_t cmd,
-				   const uint8_t *tx_data, size_t tx_len,
-				   uint8_t *rx_data, size_t *rx_len, uint8_t *status,
-				   uint32_t timeout_ms)
-{
-	const struct argos_spi_config *cfg = dev->config;
-	struct argos_spi_data *data = dev->data;
-	int ret;
-
-	if (tx_len > ARGOS_SPI_MAX_PAYLOAD) {
-		LOG_ERR("TX payload too large: %zu", tx_len);
-		return -EINVAL;
-	}
-
-	k_mutex_lock(&data->lock, K_FOREVER);
-
-	/* Build raw TX frame: [CMD] [PAYLOAD...] padded to 64 bytes */
-	memset(data->tx_buf, 0xFF, ARGOS_SPI_TRANSACTION_SIZE);
-	data->tx_buf[0] = cmd;
-	if (tx_data && tx_len > 0) {
-		memcpy(&data->tx_buf[1], tx_data, tx_len);
-	}
-
-	LOG_DBG("RAW TX (timeout=%ums): cmd=0x%02X, len=%zu", timeout_ms, cmd, tx_len);
-	LOG_HEXDUMP_DBG(data->tx_buf, MIN(16, 1 + tx_len), "RAW TX frame");
-
-	/* Transaction 1: Send command */
-	memset(data->rx_buf, 0, sizeof(data->rx_buf));
-	ret = spi_transaction_64(&cfg->spi, data->tx_buf, data->rx_buf);
-	if (ret < 0) {
-		LOG_ERR("SPI transaction 1 failed: %d", ret);
-		goto unlock;
-	}
-
-	/* Wait for operation to complete (custom timeout for long operations) */
-	k_msleep(timeout_ms);
-
-	/* Transaction 2: Send dummy to get response */
-	memset(data->tx_buf, 0xFF, ARGOS_SPI_TRANSACTION_SIZE);
-	memset(data->rx_buf, 0, sizeof(data->rx_buf));
-	ret = spi_transaction_64(&cfg->spi, data->tx_buf, data->rx_buf);
-	if (ret < 0) {
-		LOG_ERR("SPI transaction 2 failed: %d", ret);
-		goto unlock;
-	}
-
-	LOG_HEXDUMP_DBG(data->rx_buf, 16, "RAW RX");
-
-	/* Parse raw response: [STATUS] [DATA...] */
-	/* Skip leading 0xAA (idle), 0xBB (busy), or 0xFF (padding) */
-	size_t offset = 0;
-	while (offset < ARGOS_SPI_TRANSACTION_SIZE &&
-	       (data->rx_buf[offset] == ARGOS_SPI_IDLE_PATTERN ||
-	        data->rx_buf[offset] == ARGOS_SPI_BUSY_PATTERN ||
-	        data->rx_buf[offset] == 0xFF)) {
-		offset++;
-	}
-
-	if (offset >= ARGOS_SPI_TRANSACTION_SIZE) {
-		if (is_rx_all_busy(data->rx_buf, 8)) {
-			LOG_ERR("Slave still BUSY - timeout may be too short");
-		} else {
-			LOG_ERR("No valid response in raw transaction (timeout may be too short)");
-		}
-		ret = -ENODATA;
-		goto unlock;
-	}
-
-	*status = data->rx_buf[offset];
-	LOG_DBG("RAW RX: status=0x%02X at offset %zu", *status, offset);
-
-	if (rx_data && rx_len && *rx_len > 0) {
-		size_t avail = ARGOS_SPI_TRANSACTION_SIZE - offset - 1;
-		size_t copy_len = MIN(*rx_len, avail);
-		memcpy(rx_data, &data->rx_buf[offset + 1], copy_len);
-		*rx_len = copy_len;
-	}
-
-	ret = 0;
-
-unlock:
-	k_mutex_unlock(&data->lock);
-	return ret;
-}
-
-int argos_spi_send_only_raw(const struct device *dev, uint8_t cmd,
-			    const uint8_t *tx_data, size_t tx_len)
-{
-	const struct argos_spi_config *cfg = dev->config;
-	struct argos_spi_data *data = dev->data;
-	int ret;
-
-	if (tx_len > ARGOS_SPI_MAX_PAYLOAD) {
-		return -EINVAL;
-	}
-
-	k_mutex_lock(&data->lock, K_FOREVER);
-
-	/* Build raw TX frame padded to 64 bytes */
-	memset(data->tx_buf, 0xFF, ARGOS_SPI_TRANSACTION_SIZE);
-	data->tx_buf[0] = cmd;
-	if (tx_data && tx_len > 0) {
-		memcpy(&data->tx_buf[1], tx_data, tx_len);
-	}
-
-	LOG_DBG("RAW TX (no response): cmd=0x%02X", cmd);
-
-	memset(data->rx_buf, 0, sizeof(data->rx_buf));
-	ret = spi_transaction_64(&cfg->spi, data->tx_buf, data->rx_buf);
-	if (ret < 0) {
-		LOG_ERR("SPI transaction failed: %d", ret);
 	}
 
 	k_mutex_unlock(&data->lock);
@@ -689,8 +549,8 @@ int argos_spi_reset(const struct device *dev)
 		return ret;
 	}
 
-	/* Hold reset for 50ms */
-	k_msleep(50);
+	/* Hold reset for minimum pulse width */
+	k_msleep(ARGOS_SPI_RETRY_DELAY_MS);
 
 	/* Release reset */
 	ret = gpio_pin_set_dt(&cfg->reset_gpio, 0);
@@ -699,8 +559,8 @@ int argos_spi_reset(const struct device *dev)
 		return ret;
 	}
 
-	/* Wait for module to boot (500ms typical) */
-	k_msleep(500);
+	/* Wait for module to boot */
+	k_msleep(ARGOS_SPI_BOOT_DELAY_MS);
 
 	LOG_INF("Hardware reset complete");
 	return 0;
@@ -719,7 +579,7 @@ int argos_spi_diagnostic(const struct device *dev)
 	k_mutex_lock(&data->lock, K_FOREVER);
 
 	/* Wait for STM32 to be ready from previous transaction */
-	k_msleep(15);
+	k_msleep(ARGOS_SPI_INTER_TX_DELAY_MS);
 
 	/* Test 1: Basic transaction */
 	LOG_INF("");
@@ -744,7 +604,7 @@ int argos_spi_diagnostic(const struct device *dev)
 	}
 
 	/* Wait before next transaction */
-	k_msleep(15);
+	k_msleep(ARGOS_SPI_INTER_TX_DELAY_MS);
 
 	/* Test 2: PING with pipelined protocol - use actual sequence numbers */
 	LOG_INF("");
@@ -865,24 +725,20 @@ int argos_spi_get_id(const struct device *dev, uint8_t *id, size_t *id_len)
 
 int argos_spi_set_id(const struct device *dev, const uint8_t *id, size_t id_len)
 {
-	uint8_t status;
-	int ret;
-
 	if (!id || id_len == 0) {
 		return -EINVAL;
 	}
 
-	/* Use longer delay for flash write operations */
-	ret = argos_spi_transact_internal(dev, ARGOS_SPI_CMD_WRITE_ID, id, id_len,
-					  NULL, NULL, &status,
-					  ARGOS_SPI_FLASH_DELAY_MS);
-	if (ret < 0) {
-		return ret;
-	}
+	LOG_DBG("Setting ID (%zu bytes)", id_len);
 
-	if (status != ARGOS_SPI_RSP_OK) {
-		LOG_ERR("SET_ID failed: status 0x%02X", status);
-		return -EIO;
+	/* 2-phase write: REQ (0x20) then WRITE (0x21) */
+	int ret = argos_spi_write_2phase(dev,
+					 ARGOS_SPI_CMD_WRITE_ID_REQ,
+					 ARGOS_SPI_CMD_WRITE_ID,
+					 id, id_len);
+	if (ret < 0) {
+		LOG_ERR("SET_ID failed: %d", ret);
+		return ret;
 	}
 
 	LOG_DBG("ID set successfully");
@@ -916,24 +772,20 @@ int argos_spi_get_addr(const struct device *dev, uint8_t *addr, size_t *addr_len
 
 int argos_spi_set_addr(const struct device *dev, const uint8_t *addr, size_t addr_len)
 {
-	uint8_t status;
-	int ret;
-
 	if (!addr || addr_len == 0) {
 		return -EINVAL;
 	}
 
-	/* Use longer delay for flash write operations */
-	ret = argos_spi_transact_internal(dev, ARGOS_SPI_CMD_WRITE_ADDR, addr, addr_len,
-					  NULL, NULL, &status,
-					  ARGOS_SPI_FLASH_DELAY_MS);
-	if (ret < 0) {
-		return ret;
-	}
+	LOG_DBG("Setting ADDR (%zu bytes)", addr_len);
 
-	if (status != ARGOS_SPI_RSP_OK) {
-		LOG_ERR("SET_ADDR failed: status 0x%02X", status);
-		return -EIO;
+	/* 2-phase write: REQ (0x22) then WRITE (0x23) */
+	int ret = argos_spi_write_2phase(dev,
+					 ARGOS_SPI_CMD_WRITE_ADDR_REQ,
+					 ARGOS_SPI_CMD_WRITE_ADDR,
+					 addr, addr_len);
+	if (ret < 0) {
+		LOG_ERR("SET_ADDR failed: %d", ret);
+		return ret;
 	}
 
 	LOG_DBG("ADDR set successfully");
@@ -967,24 +819,20 @@ int argos_spi_get_secret_key(const struct device *dev, uint8_t *key, size_t *key
 
 int argos_spi_set_secret_key(const struct device *dev, const uint8_t *key, size_t key_len)
 {
-	uint8_t status;
-	int ret;
-
 	if (!key || key_len == 0) {
 		return -EINVAL;
 	}
 
-	/* Use longer delay for flash write operations */
-	ret = argos_spi_transact_internal(dev, ARGOS_SPI_CMD_WRITE_SECKEY, key, key_len,
-					  NULL, NULL, &status,
-					  ARGOS_SPI_FLASH_DELAY_MS);
-	if (ret < 0) {
-		return ret;
-	}
+	LOG_DBG("Setting SECRET_KEY (%zu bytes)", key_len);
 
-	if (status != ARGOS_SPI_RSP_OK) {
-		LOG_ERR("SET_SECRET_KEY failed: status 0x%02X", status);
-		return -EIO;
+	/* 2-phase write: REQ (0x25) then WRITE (0x26) */
+	int ret = argos_spi_write_2phase(dev,
+					 ARGOS_SPI_CMD_WRITE_SECKEY_REQ,
+					 ARGOS_SPI_CMD_WRITE_SECKEY,
+					 key, key_len);
+	if (ret < 0) {
+		LOG_ERR("SET_SECRET_KEY failed: %d", ret);
+		return ret;
 	}
 
 	LOG_DBG("SECRET_KEY set successfully");
@@ -1018,24 +866,20 @@ int argos_spi_get_rconf(const struct device *dev, uint8_t *rconf, size_t *rconf_
 
 int argos_spi_set_rconf(const struct device *dev, const uint8_t *rconf, size_t rconf_len)
 {
-	uint8_t status;
-	int ret;
-
 	if (!rconf || rconf_len == 0) {
 		return -EINVAL;
 	}
 
-	/* Use longer delay for flash write operations */
-	ret = argos_spi_transact_internal(dev, ARGOS_SPI_CMD_WRITE_RCONF, rconf, rconf_len,
-					  NULL, NULL, &status,
-					  ARGOS_SPI_FLASH_DELAY_MS);
-	if (ret < 0) {
-		return ret;
-	}
+	LOG_DBG("Setting RCONF (%zu bytes)", rconf_len);
 
-	if (status != ARGOS_SPI_RSP_OK) {
-		LOG_ERR("SET_RCONF failed: status 0x%02X", status);
-		return -EIO;
+	/* 2-phase write: REQ (0x0B) then WRITE (0x0C) */
+	int ret = argos_spi_write_2phase(dev,
+					 ARGOS_SPI_CMD_WRITE_RCONF_REQ,
+					 ARGOS_SPI_CMD_WRITE_RCONF,
+					 rconf, rconf_len);
+	if (ret < 0) {
+		LOG_ERR("SET_RCONF failed: %d", ret);
+		return ret;
 	}
 
 	LOG_DBG("RCONF set successfully");
@@ -1072,20 +916,16 @@ int argos_spi_get_kmac(const struct device *dev, uint8_t *kmac)
 
 int argos_spi_set_kmac(const struct device *dev, uint8_t kmac)
 {
-	uint8_t status;
-	int ret;
+	LOG_DBG("Setting KMAC to %u", kmac);
 
-	/* Use longer delay for flash write operations */
-	ret = argos_spi_transact_internal(dev, ARGOS_SPI_CMD_WRITE_KMAC, &kmac, 1,
-					  NULL, NULL, &status,
-					  ARGOS_SPI_FLASH_DELAY_MS);
+	/* 2-phase write: REQ (0x0F) then WRITE (0x10) */
+	int ret = argos_spi_write_2phase(dev,
+					 ARGOS_SPI_CMD_WRITE_KMAC_REQ,
+					 ARGOS_SPI_CMD_WRITE_KMAC,
+					 &kmac, 1);
 	if (ret < 0) {
+		LOG_ERR("SET_KMAC failed: %d", ret);
 		return ret;
-	}
-
-	if (status != ARGOS_SPI_RSP_OK) {
-		LOG_ERR("SET_KMAC failed: status 0x%02X", status);
-		return -EIO;
 	}
 
 	LOG_DBG("KMAC set successfully to %u", kmac);
@@ -1117,6 +957,30 @@ int argos_spi_get_mac_status(const struct device *dev, uint8_t *mac_status)
 	/* MAC status is in first byte of response */
 	*mac_status = (resp_len > 0) ? resp[0] : MAC_UNKNOWN;
 	LOG_DBG("MAC status: 0x%02X", *mac_status);
+	return 0;
+}
+
+int argos_spi_get_spimac_state(const struct device *dev, uint8_t *state, size_t *state_len)
+{
+	uint8_t status;
+	int ret;
+
+	if (!state || !state_len || *state_len < 2) {
+		return -EINVAL;
+	}
+
+	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_READ_SPIMAC_STATE, NULL, 0,
+				 state, state_len, &status);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (status != PROT_OK) {
+		LOG_ERR("GET_SPIMAC_STATE failed: status 0x%02X", status);
+		return -EIO;
+	}
+
+	LOG_DBG("SPIMAC state: 0x%02X 0x%02X (len=%zu)", state[0], state[1], *state_len);
 	return 0;
 }
 
@@ -1235,7 +1099,7 @@ int argos_spi_sync(const struct device *dev)
 		}
 
 		/* Small delay between sync attempts */
-		k_msleep(10);
+		k_msleep(ARGOS_SPI_DETECT_TIMEOUT_MS);
 	}
 
 	k_mutex_unlock(&data->lock);
@@ -1302,9 +1166,155 @@ int argos_spi_write_tx(const struct device *dev, const uint8_t *data, size_t len
 	 * The WRITE_TX handler does async work (FIFO, MAC queue) after sending ACK.
 	 * DMA is re-armed only after handler returns. Give STM32 time to complete.
 	 */
-	k_msleep(100);
+	k_msleep(ARGOS_SPI_POST_TX_DELAY_MS);
 
 	LOG_INF("TX data queued (%zu bytes), use wait_tx_complete() to poll", len);
+	return 0;
+}
+
+/*
+ * Additional API functions - matching UART driver functionality
+ */
+
+int argos_spi_get_lpm(const struct device *dev, uint8_t *lpm)
+{
+	uint8_t status;
+	uint8_t resp[4];
+	size_t resp_len = sizeof(resp);
+	int ret;
+
+	if (!lpm) {
+		return -EINVAL;
+	}
+
+	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_READ_LPM, NULL, 0,
+				 resp, &resp_len, &status);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (status != PROT_OK) {
+		LOG_ERR("GET_LPM failed: status 0x%02X", status);
+		return -EIO;
+	}
+
+	*lpm = (resp_len > 0) ? resp[0] : 0;
+	LOG_DBG("LPM: %u", *lpm);
+	return 0;
+}
+
+int argos_spi_set_lpm(const struct device *dev, uint8_t lpm)
+{
+	LOG_DBG("Setting LPM to %u", lpm);
+
+	/* 2-phase write: REQ (0x12) then WRITE (0x13) */
+	int ret = argos_spi_write_2phase(dev,
+					 ARGOS_SPI_CMD_WRITE_LPM_REQ,
+					 ARGOS_SPI_CMD_WRITE_LPM,
+					 &lpm, 1);
+	if (ret < 0) {
+		LOG_ERR("SET_LPM failed: %d", ret);
+		return ret;
+	}
+
+	LOG_DBG("LPM set to %u", lpm);
+	return 0;
+}
+
+int argos_spi_get_tcxo_wu(const struct device *dev, uint8_t *tcxo_wu, size_t *tcxo_len)
+{
+	uint8_t status;
+	int ret;
+
+	if (!tcxo_wu || !tcxo_len || *tcxo_len == 0) {
+		return -EINVAL;
+	}
+
+	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_READ_TCXO_WU, NULL, 0,
+				 tcxo_wu, tcxo_len, &status);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (status != PROT_OK) {
+		LOG_ERR("GET_TCXO_WU failed: status 0x%02X", status);
+		return -EIO;
+	}
+
+	LOG_DBG("TCXO warmup received (len=%zu)", *tcxo_len);
+	return 0;
+}
+
+int argos_spi_set_tcxo_wu(const struct device *dev, const uint8_t *tcxo_wu, size_t tcxo_len)
+{
+	if (!tcxo_wu || tcxo_len == 0) {
+		return -EINVAL;
+	}
+
+	LOG_DBG("Setting TCXO_WU (%zu bytes)", tcxo_len);
+
+	/* 2-phase write: REQ (0x29) then WRITE (0x2A) */
+	int ret = argos_spi_write_2phase(dev,
+					 ARGOS_SPI_CMD_WRITE_TCXOWU_REQ,
+					 ARGOS_SPI_CMD_WRITE_TCXOWU,
+					 tcxo_wu, tcxo_len);
+	if (ret < 0) {
+		LOG_ERR("SET_TCXO_WU failed: %d", ret);
+		return ret;
+	}
+
+	LOG_DBG("TCXO warmup set successfully");
+	return 0;
+}
+
+int argos_spi_save_rconf(const struct device *dev)
+{
+	uint8_t status;
+	int ret;
+
+	LOG_DBG("Saving radio config to NVM...");
+
+	/* Save operation writes to flash */
+	ret = argos_spi_transact_internal(dev, ARGOS_SPI_CMD_SAVE_RCONF, NULL, 0,
+					  NULL, NULL, &status,
+					  ARGOS_SPI_FLASH_DELAY_MS);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (status != PROT_OK) {
+		LOG_ERR("SAVE_RCONF failed: status 0x%02X", status);
+		return -EIO;
+	}
+
+	LOG_INF("Radio config saved to NVM");
+	return 0;
+}
+
+int argos_spi_get_rconf_raw(const struct device *dev, uint8_t *rconf_raw, size_t *rconf_len)
+{
+	uint8_t status;
+	int ret;
+
+	if (!rconf_raw || !rconf_len || *rconf_len < 16) {
+		return -EINVAL;
+	}
+
+	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_READ_RCONF_RAW, NULL, 0,
+				 rconf_raw, rconf_len, &status);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (status != PROT_OK) {
+		LOG_ERR("GET_RCONF_RAW failed: status 0x%02X", status);
+		return -EIO;
+	}
+
+	LOG_DBG("RCONF_RAW received (len=%zu): %02X%02X%02X%02X%02X%02X%02X%02X...",
+		*rconf_len,
+		rconf_raw[0], rconf_raw[1], rconf_raw[2], rconf_raw[3],
+		rconf_raw[4], rconf_raw[5], rconf_raw[6], rconf_raw[7]);
 	return 0;
 }
 
