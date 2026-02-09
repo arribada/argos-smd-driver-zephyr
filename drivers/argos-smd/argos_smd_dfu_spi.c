@@ -602,6 +602,17 @@ int argos_dfu_write_chunk(const struct device *dev, uint32_t addr,
 		return -EINVAL;
 	}
 
+	/* STM32 flash requires 8-byte aligned writes */
+	if ((addr & 0x7) != 0) {
+		LOG_ERR("Address 0x%08X not 8-byte aligned", addr);
+		return -EINVAL;
+	}
+
+	if ((len & 0x7) != 0) {
+		LOG_ERR("Length %zu not 8-byte aligned", len);
+		return -EINVAL;
+	}
+
 	LOG_DBG("Writing %zu bytes at 0x%08X", len, addr);
 
 	/* ═══════════════════════════════════════════════════════════════
@@ -967,7 +978,7 @@ int argos_spi_firmware_update(const struct device *dev,
 	ret = argos_dfu_erase(dev);
 	if (ret < 0) {
 		LOG_ERR("Flash erase failed: %d", ret);
-		argos_dfu_abort(dev);
+		(void)argos_dfu_abort(dev);  /* Intentionally ignore abort result */
 		return ret;
 	}
 
@@ -991,10 +1002,17 @@ int argos_spi_firmware_update(const struct device *dev,
 	while (offset < size) {
 		size_t chunk_len = MIN(ARGOS_DFU_CHUNK_SIZE, size - offset);
 
+		/* Verify address won't overflow application space */
+		if (addr + chunk_len > ARGOS_FLASH_APPLICATION + ARGOS_MAX_APP_SIZE) {
+			LOG_ERR("Address overflow: 0x%08X + %zu exceeds app space", addr, chunk_len);
+			(void)argos_dfu_abort(dev);  /* Intentionally ignore abort result */
+			return -EINVAL;
+		}
+
 		ret = argos_dfu_write_chunk(dev, addr, &firmware[offset], chunk_len);
 		if (ret < 0) {
 			LOG_ERR("Write failed at offset %zu: %d", offset, ret);
-			argos_dfu_abort(dev);
+			(void)argos_dfu_abort(dev);  /* Intentionally ignore abort result */
 			return ret;
 		}
 
@@ -1021,7 +1039,7 @@ int argos_spi_firmware_update(const struct device *dev,
 	ret = argos_dfu_verify(dev, crc32);
 	if (ret < 0) {
 		LOG_ERR("CRC verification failed: %d", ret);
-		argos_dfu_abort(dev);
+		(void)argos_dfu_abort(dev);  /* Intentionally ignore abort result */
 		return ret;
 	}
 

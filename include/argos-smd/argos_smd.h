@@ -63,8 +63,12 @@ int argos_set_radioconf(const struct device *dev, const char *rconf);
 
 /**
  * @brief Sets the save radio configuration of the Argos SMD.
+ *
+ * @deprecated Radio configuration is now saved automatically to flash.
+ * This function is kept for backward compatibility but may be removed in a future version.
+ *
  * This function sends the command "AT+SAVE_RCONF=<saveconf>" to configure the device's radio
- * settings. This function is not required anymore should be deleted
+ * settings.
  *
  * @param dev Pointer to the device structure.
  * @param saveconf Boolean 1 to save

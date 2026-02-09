@@ -242,6 +242,11 @@ int argos_dfu_write(const struct device *dev, uint32_t addr,
 	char cmd[16 + 8 + 1 + ARGOS_DFU_CHUNK_SIZE * 2 + 1];
 	char hex_data[ARGOS_DFU_CHUNK_SIZE * 2 + 1];
 
+	if (data == NULL) {
+		LOG_ERR("Data pointer is NULL");
+		return -EINVAL;
+	}
+
 	if (len > ARGOS_DFU_CHUNK_SIZE) {
 		LOG_ERR("Chunk size %zu exceeds maximum %d", len, ARGOS_DFU_CHUNK_SIZE);
 		return -EINVAL;
@@ -249,6 +254,17 @@ int argos_dfu_write(const struct device *dev, uint32_t addr,
 
 	if (len == 0) {
 		LOG_ERR("Cannot write empty chunk");
+		return -EINVAL;
+	}
+
+	/* STM32 flash requires 8-byte aligned writes */
+	if ((addr & 0x7) != 0) {
+		LOG_ERR("Address 0x%08X not 8-byte aligned", addr);
+		return -EINVAL;
+	}
+
+	if ((len & 0x7) != 0) {
+		LOG_ERR("Length %zu not 8-byte aligned", len);
 		return -EINVAL;
 	}
 
@@ -438,7 +454,7 @@ int argos_ota_update(const struct device *dev,
 		if (ret < 0) {
 			LOG_ERR("Failed to write chunk at offset %zu: %d", offset, ret);
 			LOG_WRN("Attempting to abort DFU session...");
-			argos_dfu_abort(dev);
+			(void)argos_dfu_abort(dev);  /* Intentionally ignore abort result */
 			return ret;
 		}
 
@@ -467,7 +483,7 @@ int argos_ota_update(const struct device *dev,
 	ret = argos_dfu_verify(dev, fw_crc);
 	if (ret < 0) {
 		LOG_ERR("CRC verification failed: %d", ret);
-		argos_dfu_abort(dev);
+		(void)argos_dfu_abort(dev);  /* Intentionally ignore abort result */
 		return ret;
 	}
 

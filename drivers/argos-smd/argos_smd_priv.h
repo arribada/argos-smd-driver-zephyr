@@ -31,8 +31,8 @@ extern "C" {
 #define AT_SN         "AT+SN"      // Get serial number
 #define AT_RCONF      "AT+RCONF"      // Get radio configuration (decoded)
 #define AT_RCONFRAW   "AT+RCONFRAW"   // Get raw radio configuration (16 bytes hex)
-// TODO: to be removed saved by default in flash
-#define AT_SAVE_RCONF "AT+SAVE_RCONF" // Save radio configuration.
+/* Note: AT_SAVE_RCONF is deprecated - radio config now saved automatically to flash */
+#define AT_SAVE_RCONF "AT+SAVE_RCONF" // Save radio configuration (deprecated)
 #define AT_LPM        "AT+LPM"        // Get/Set low power mode
 #define AT_MC         "AT+MC"         // Get/Set MAC counter
 #define AT_TCXO_WU    "AT+TCXO_WU"    // Get/Set TCXO wakeup time
@@ -42,12 +42,10 @@ extern "C" {
 #define AT_KMAC       "AT+KMAC"       // Get/Set KMAC profile
 #define AT_CW         "AT+CW"         // Get/Set Continuous wave test
 
-// Define all the ways functions can return
+// Response status states
 #define RESPONSE_PENDING 0
-#define ERROR_CMD_LENGTH 1
-#define ERROR_CMD_BUILD  2
-#define RESPONSE_FAIL    3
-#define RESPONSE_CLEAR   4
+#define RESPONSE_CLEAR   1
+#define RESPONSE_FAIL    2
 
 struct argos_smd_buf {
 	char data[ARGOS_SMD_BUF_SIZE];
@@ -57,8 +55,7 @@ struct argos_smd_buf {
 struct argos_smd_data {
 	atomic_t status;
 	struct argos_smd_buf response;
-	bool has_response;
-
+	bool at_line_start;  /* Track line boundaries to filter '+' in debug logs */
 	argos_smd_callback_t callback;
 	void *user_data;
 };

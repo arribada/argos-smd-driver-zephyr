@@ -3,10 +3,15 @@
 
 menuconfig ARGOS_SMD
     bool "Argos SMD satellite modem driver"
+    imply GPIO
     help
       Enable Argos SMD satellite modem driver. This driver supports
       communication with Argos SMD modules via UART (AT commands) or
       SPI (Protocol A+).
+
+      GPIO support is recommended for optional features:
+      - UART: wakeup GPIO for low-power mode
+      - SPI: reset GPIO for hardware reset
 
 if ARGOS_SMD
 
@@ -21,6 +26,9 @@ config ARGOS_SMD_UART
       Use UART with AT commands for communication with Argos SMD modules.
       This is the standard interface supporting all AT commands.
 
+      Requires: CONFIG_UART_INTERRUPT_DRIVEN=y
+      Optional: Configure wakeup-gpios in devicetree for low-power mode support.
+
 config ARGOS_SMD_SPI
     bool "SPI (Protocol A+)"
     depends on SPI
@@ -28,6 +36,9 @@ config ARGOS_SMD_SPI
       Use SPI with Protocol A+ binary framing for communication.
       Frame format: [MAGIC(1)] [SEQ(1)] [CMD(1)] [LEN(1)] [DATA(0-250)] [CRC(1)]
       Uses CRC-8 CCITT (polynomial 0x07).
+
+      Requires: CONFIG_SPI=y
+      Optional: Configure reset-gpios in devicetree for hardware reset support.
 
 endchoice
 

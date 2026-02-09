@@ -87,13 +87,33 @@ static void uart_rx_handler(const struct device *dev, void *dev_smd)
 			continue;
 		}
 
-		if (byte == '+' && atomic_get(&drv_data->status) == RESPONSE_CLEAR) {
+		/* Detect start of AT response ('+' at beginning of line only)
+		 * This filters out '+' in debug logs like "Received: AT+TX=..."
+		 */
+		if (byte == '\r' || byte == '\n') {
+			drv_data->at_line_start = true;
+		}
+
+		if (byte == '+' && atomic_get(&drv_data->status) == RESPONSE_CLEAR && drv_data->at_line_start) {
 			atomic_set(&drv_data->status, RESPONSE_PENDING);
 			memset(drv_data->response.data, 0, sizeof(drv_data->response.data));
 			drv_data->response.len = 0;
+			drv_data->at_line_start = false;
+		} else if (atomic_get(&drv_data->status) == RESPONSE_CLEAR) {
+			/* Not in a response - only accept '+' at line start */
+			if (byte != '\r' && byte != '\n') {
+				drv_data->at_line_start = false;
+			}
+			continue;
 		}
 
 		if (atomic_get(&drv_data->status) == RESPONSE_PENDING) {
+			/* Check buffer space BEFORE writing to prevent overflow */
+			if (drv_data->response.len >= sizeof(drv_data->response.data) - 1) {
+				atomic_set(&drv_data->status, RESPONSE_FAIL);
+				continue;
+			}
+
 			drv_data->response.len++;
 			size_t index = drv_data->response.len - 1;
 			drv_data->response.data[index] = byte;
@@ -101,17 +121,15 @@ static void uart_rx_handler(const struct device *dev, void *dev_smd)
 			if (byte == '\n' || byte == '\r') {
 				drv_data->response.data[index] = '\0';
 				atomic_set(&drv_data->status, RESPONSE_CLEAR);
-				/* Read callback NOW, not at start of handler */
+
+				/* Debug: Log when driver completes receiving a line */
+				LOG_DBG("Driver RX complete: [%s]", drv_data->response.data);
+
 				argos_smd_callback_t callback = drv_data->callback;
 				if (callback != NULL) {
 					callback(drv_data->response.data, drv_data->user_data);
 				}
 			}
-		}
-
-		if (drv_data->response.len >= sizeof(drv_data->response.data)) {
-			atomic_set(&drv_data->status, RESPONSE_FAIL);
-			continue;
 		}
 	}
 }
@@ -413,6 +431,7 @@ static int argos_smd_init(const struct device *dev)
 	argos_smd_uart_flush(dev);
 
 	drv_data->response.len = 0;
+	drv_data->at_line_start = true;  /* Start at beginning of line */
 	atomic_set(&drv_data->status, RESPONSE_CLEAR);
 
 	int ret = uart_irq_callback_user_data_set(cfg->uart_dev, uart_rx_handler, (void *)dev);

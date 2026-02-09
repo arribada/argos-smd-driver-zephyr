@@ -248,9 +248,14 @@ static bool is_slave_not_ready(const uint8_t *buf, size_t len)
 	return is_rx_all_idle(buf, len) || is_rx_all_busy(buf, len);
 }
 
-/* Maximum retries when slave returns idle (still processing) */
-#define FLASH_WRITE_MAX_RETRIES  10
-#define FLASH_WRITE_RETRY_DELAY_MS  50
+/*
+ * Flash write retry configuration
+ * STM32 flash write can take up to 50ms for page erase + write.
+ * With 50ms delay and 10 retries, we allow up to 500ms for completion.
+ * This handles worst-case scenarios during flash operations.
+ */
+#define FLASH_WRITE_MAX_RETRIES  10   /* Max polling attempts */
+#define FLASH_WRITE_RETRY_DELAY_MS  50  /* Delay between retries */
 
 /**
  * @brief Internal transaction function with configurable delay
