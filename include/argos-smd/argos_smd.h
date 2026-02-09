@@ -10,6 +10,23 @@
 extern "C" {
 #endif
 
+/**
+ * @defgroup uart_api UART AT Command API
+ * @brief UART interface for Argos SMD module configuration and data transmission.
+ *
+ * This API communicates with the Argos SMD module via UART at 9600 baud using
+ * AT commands. It provides functions for:
+ * - Reading module information (version, address, ID, serial number, etc.)
+ * - Configuring module parameters (radio config, low power mode, KMAC, etc.)
+ * - Sending satellite uplink payloads
+ * - Managing the wakeup GPIO for low power mode
+ *
+ * All read commands are asynchronous: they send the AT command and the response
+ * is delivered via the registered callback function.
+ *
+ * @{
+ */
+
 #define ARGOS_SMD_BUF_SIZE 255
 
 /**
@@ -138,12 +155,12 @@ int argos_set_udate(const struct device *dev, const char *datetime);
 
 /**
  * @brief Sets the Continuous wave RF test of the Argos SMD.
- * This function sends the command "AT+CW=<cw>" to configure the device.
- * <cw> should be in the format: "<modulation>,<frequency>,<power>,<duration>"
- * <modulation>: 1 = CW, 2 = LDA2, 3 = LDA2L, 4 = VLDA4, 5 = LDK, 6 = HDA4, 0 = NONE
- * <frequency>: Frequency in Hz (e.g., 434000000 for 434 MHz)
- * <power>: Power level in dBm (e.g., 14)
- * <duration>: Duration in milliseconds
+ * This function sends the command "AT+CW=\<cw\>" to configure the device.
+ * \<cw\> should be in the format: "\<modulation\>,\<frequency\>,\<power\>,\<duration\>"
+ * - modulation: 1 = CW, 2 = LDA2, 3 = LDA2L, 4 = VLDA4, 5 = LDK, 6 = HDA4, 0 = NONE
+ * - frequency: Frequency in Hz (e.g., 434000000 for 434 MHz)
+ * - power: Power level in dBm (e.g., 14)
+ * - duration: Duration in milliseconds
  *
  * @param dev Pointer to the device structure.
  * @param cw The continuous wave RF test string to be set.
@@ -351,6 +368,8 @@ int argos_read_kmac(const struct device *dev);
  * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
  */
 int argos_read_cw(const struct device *dev);
+
+/** @} */ /* end of uart_api */
 
 #ifdef __cplusplus
 }

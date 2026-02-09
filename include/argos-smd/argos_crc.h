@@ -17,9 +17,17 @@ extern "C" {
 /**
  * @file argos_crc.h
  * @brief Shared CRC utilities for Argos SMD drivers
+ */
+
+/**
+ * @defgroup crc_api CRC Utilities
+ * @brief Shared CRC functions used by UART and SPI DFU implementations.
  *
- * This header provides common CRC functions used by both
- * UART DFU and SPI DFU implementations.
+ * Provides CRC-32 calculation for firmware integrity verification
+ * during DFU operations. Used internally by both argos_ota_update()
+ * (UART) and argos_spi_firmware_update() (SPI).
+ *
+ * @{
  */
 
 /**
@@ -33,6 +41,8 @@ extern "C" {
  * @return CRC32 checksum value
  */
 uint32_t argos_dfu_crc32(const uint8_t *data, size_t len);
+
+/** @} */ /* end of crc_api */
 
 #ifdef __cplusplus
 }

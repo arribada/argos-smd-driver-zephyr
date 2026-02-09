@@ -21,21 +21,52 @@ extern "C" {
 /**
  * @file argos_smd_dfu_spi.h
  * @brief Argos SMD DFU (Device Firmware Update) via SPI
+ */
+
+/**
+ * @defgroup spi_dfu_api SPI DFU API
+ * @brief SPI-based device firmware update for Argos SMD modules.
  *
- * This module provides firmware update functionality for Argos SMD modules
- * over SPI using the Protocol A+ framing and bootloader DFU commands.
+ * This API provides firmware update functionality over SPI using the
+ * Protocol A+ framing and bootloader DFU commands (0x30-0x3F).
  *
- * DFU Sequence:
+ * ### DFU Commands
+ * | Command | Code | Description |
+ * |---------|------|-------------|
+ * | DFU_PING | 0x30 | Check bootloader is ready |
+ * | DFU_GET_INFO | 0x31 | Get bootloader version and flash layout |
+ * | DFU_ERASE | 0x32 | Erase application flash (2-3 seconds) |
+ * | DFU_WRITE_REQ | 0x33 | Write request with address and length |
+ * | DFU_WRITE_DATA | 0x34 | Write firmware chunk data |
+ * | DFU_VERIFY | 0x37 | Verify firmware CRC32 |
+ * | DFU_JUMP | 0x39 | Jump to new application |
+ * | DFU_GET_STATUS | 0x3A | Query DFU session status |
+ * | DFU_ABORT | 0x3B | Abort current DFU |
+ *
+ * ### DFU Sequence
  * 1. Enter bootloader mode (CMD_DFU_ENTER 0x3F from application)
- * 2. Wait for bootloader to be ready (~100ms)
+ * 2. Wait for bootloader ready (~100ms)
  * 3. Ping bootloader (DFU_PING 0x30)
  * 4. Get bootloader info (DFU_GET_INFO 0x31)
  * 5. Erase flash (DFU_ERASE 0x32) - takes 2-3 seconds
- * 6. Write firmware in chunks:
- *    a. DFU_WRITE_REQ (0x33) with address and length
- *    b. DFU_WRITE_DATA (0x34) with chunk data
+ * 6. Write firmware in chunks (DFU_WRITE_REQ + DFU_WRITE_DATA)
  * 7. Verify CRC (DFU_VERIFY 0x37)
  * 8. Jump to application (DFU_JUMP 0x39)
+ *
+ * For a complete update in one call, use argos_spi_firmware_update().
+ *
+ * ### Flash Memory Layout (STM32WL55)
+ * ```
+ * 0x08000000 +------------------+
+ *            | APPLICATION      | 204 KB (102 pages)
+ * 0x08033000 +------------------+
+ *            | BOOTLOADER       | 32 KB (16 pages)
+ * 0x0803B000 +------------------+
+ *            | FLASH_USER       | 20 KB (Kineis config) - PRESERVED
+ * 0x08040000 +------------------+ End of Flash
+ * ```
+ *
+ * @{
  */
 
 /* DFU chunk size for writes
@@ -47,20 +78,7 @@ extern "C" {
 /* Application header size */
 #define ARGOS_DFU_HEADER_SIZE     256
 
-/*
- * Flash memory layout (STM32WL55 - Bootloader AFTER application)
- *
- * 0x08000000 +------------------+
- *            | APPLICATION      | 204 KB (102 pages)
- * 0x08033000 +------------------+
- *            | BOOTLOADER       | 32 KB (16 pages)
- * 0x0803B000 +------------------+
- *            | FLASH_USER       | 20 KB (Kineis config) - PRESERVED
- * 0x08040000 +------------------+ End of Flash
- *
- * NOTE: Application starts at 0x08000000 for Kineis library compatibility.
- * The bootloader is located AFTER the application at 0x08033000.
- */
+/* Flash memory layout - see group description for details */
 #define ARGOS_FLASH_APPLICATION   0x08000000  /* Application at start */
 #define ARGOS_FLASH_APP_SIZE      0x33000     /* 204 KB */
 #define ARGOS_FLASH_BOOTLOADER    0x08033000  /* Bootloader AFTER app */
@@ -402,6 +420,8 @@ int argos_spi_firmware_update(const struct device *dev,
 			      argos_dfu_progress_cb_t progress_cb, void *user_data);
 
 /* CRC32 function is provided by argos_crc.h (shared with UART DFU) */
+
+/** @} */ /* end of spi_dfu_api */
 
 #ifdef __cplusplus
 }

@@ -21,13 +21,36 @@ extern "C" {
 /**
  * @file argos_smd_spi.h
  * @brief Argos SMD SPI Protocol A+ Interface
+ */
+
+/**
+ * @defgroup spi_api SPI Protocol A+ API
+ * @brief SPI interface for Argos SMD module configuration and data transmission.
  *
- * This module implements the Protocol A+ framing for SPI communication
- * with Argos SMD modules. It handles magic bytes, sequence numbers,
- * CRC-8 calculation, and response parsing.
+ * This API communicates with the Argos SMD module via SPI using the Protocol A+
+ * binary framing at 125 kHz. It provides functions for:
+ * - Reading module information (version, address, ID, serial number, etc.)
+ * - Configuring module parameters (radio config, low power mode, KMAC, etc.)
+ * - Sending satellite uplink payloads with TX completion polling
+ * - Hardware reset and SPI bus diagnostics
  *
- * Frame format:
- * [MAGIC(1)] [SEQ(1)] [CMD/STATUS(1)] [LEN(1)] [DATA(0-250)] [CRC(1)]
+ * ### Protocol A+ Frame Format
+ *
+ * Each SPI transaction is a fixed 64-byte full-duplex exchange:
+ *
+ * | Field | Size | Description |
+ * |-------|------|-------------|
+ * | MAGIC | 1 | 0xAA (request) or 0x55 (response) |
+ * | SEQ | 1 | Sequence number |
+ * | CMD/STATUS | 1 | Command (request) or status code (response) |
+ * | LEN | 1 | Payload length (0-250) |
+ * | DATA | 0-250 | Payload data |
+ * | CRC | 1 | CRC-8 CCITT checksum |
+ *
+ * The protocol is pipelined: the response to a command arrives in the
+ * **next** SPI transaction. Send a NOP (0x00) to retrieve the response.
+ *
+ * @{
  */
 
 /* Protocol A+ Magic Bytes */
@@ -627,6 +650,8 @@ int argos_spi_save_rconf(const struct device *dev);
  * @return 0 on success, negative errno on failure
  */
 int argos_spi_get_rconf_raw(const struct device *dev, uint8_t *rconf_raw, size_t *rconf_len);
+
+/** @} */ /* end of spi_api */
 
 #ifdef __cplusplus
 }

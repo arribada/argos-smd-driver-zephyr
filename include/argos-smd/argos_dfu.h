@@ -14,30 +14,41 @@
 /**
  * @file argos_dfu.h
  * @brief Argos SMD Device Firmware Update (DFU) API - UART Protocol
- *
- * This API provides functions to perform over-the-air (OTA) firmware updates
- * on Argos SMD modules via UART using AT+DFU commands.
- *
- * Protocol commands (compatible with STM32WL bootloader):
- *   AT+DFU=PING              - Check bootloader is ready
- *   AT+DFU=ERASE             - Erase application flash
- *   AT+DFU=WRITE,<addr>,<hex> - Write data at address
- *   AT+DFU=VERIFY,<crc>      - Verify firmware CRC32
- *   AT+DFU=JUMP              - Jump to application
- *   AT+DFU=ABORT             - Abort DFU session
- *
- * The DFU process involves:
- * 1. Entering bootloader mode from application mode (AT+BOOT)
- * 2. Waiting for bootloader ready (AT+DFU=PING)
- * 3. Erasing flash (AT+DFU=ERASE)
- * 4. Sending firmware data in chunks with addresses (AT+DFU=WRITE)
- * 5. Verifying CRC (AT+DFU=VERIFY)
- * 6. Jumping to new firmware (AT+DFU=JUMP)
  */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/**
+ * @defgroup uart_dfu_api UART DFU API
+ * @brief UART-based device firmware update for Argos SMD modules.
+ *
+ * This API provides functions to perform over-the-air (OTA) firmware updates
+ * on Argos SMD modules via UART using AT+DFU commands.
+ *
+ * ### Protocol Commands
+ * | Command | Description |
+ * |---------|-------------|
+ * | `AT+DFU=PING` | Check bootloader is ready |
+ * | `AT+DFU=ERASE` | Erase application flash |
+ * | `AT+DFU=WRITE,\<addr\>,\<hex\>` | Write data at address |
+ * | `AT+DFU=VERIFY,\<crc\>` | Verify firmware CRC32 |
+ * | `AT+DFU=JUMP` | Jump to application |
+ * | `AT+DFU=ABORT` | Abort DFU session |
+ *
+ * ### DFU Sequence
+ * 1. Enter bootloader mode from application mode (`AT+BOOT`)
+ * 2. Wait for bootloader ready (`AT+DFU=PING`)
+ * 3. Erase flash (`AT+DFU=ERASE`)
+ * 4. Send firmware data in chunks with addresses (`AT+DFU=WRITE`)
+ * 5. Verify CRC (`AT+DFU=VERIFY`)
+ * 6. Jump to new firmware (`AT+DFU=JUMP`)
+ *
+ * For a complete update in one call, use argos_ota_update().
+ *
+ * @{
+ */
 
 /**
  * @brief Maximum size of a single DFU data chunk in bytes
@@ -159,7 +170,7 @@ int argos_dfu_erase(const struct device *dev);
 /**
  * @brief Write a chunk of firmware data at specified address
  *
- * Sends AT+DFU=WRITE,<addr>,<hex_data> command to write firmware data.
+ * Sends AT+DFU=WRITE,\<addr\>,\<hex_data\> command to write firmware data.
  * Data is encoded as hex ASCII. Length must not exceed ARGOS_DFU_CHUNK_SIZE bytes.
  *
  * @param dev Pointer to the Argos SMD device
@@ -174,7 +185,7 @@ int argos_dfu_write(const struct device *dev, uint32_t addr,
 /**
  * @brief Verify firmware CRC32
  *
- * Sends AT+DFU=VERIFY,<crc32> command to verify the written firmware.
+ * Sends AT+DFU=VERIFY,\<crc32\> command to verify the written firmware.
  *
  * @param dev Pointer to the Argos SMD device
  * @param crc32 Expected CRC32 of the firmware
@@ -264,6 +275,8 @@ int argos_dfu_send_chunk(const struct device *dev, const uint8_t *data, size_t l
 int argos_dfu_finish(const struct device *dev);
 
 /* CRC32 function is provided by argos_crc.h */
+
+/** @} */ /* end of uart_dfu_api */
 
 #ifdef __cplusplus
 }
