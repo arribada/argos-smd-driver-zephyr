@@ -93,14 +93,14 @@ Feather D5 (P0.27) ──> Argos SMD Wakeup Pin
 
 ```bash
 # Standard build
-west build -b adafruit_feather_nrf52840 samples/ota_test
+west build -b adafruit_feather_nrf52840 samples/uart_dfu_test
 
 # Avec full OTA test
-west build -b adafruit_feather_nrf52840 samples/ota_test -- \
+west build -b adafruit_feather_nrf52840 samples/uart_dfu_test -- \
   -DCONFIG_ARGOS_OTA_TEST_FULL_UPDATE=y
 
 # Avec RTT logging
-west build -b adafruit_feather_nrf52840 samples/ota_test -- \
+west build -b adafruit_feather_nrf52840 samples/uart_dfu_test -- \
   -DCONF_FILE=prj_rtt.conf
 ```
 
@@ -190,7 +190,7 @@ if (!device_is_ready(uart)) {
 
 ```bash
 # Build et flash
-west build -b adafruit_feather_nrf52840 samples/ota_test
+west build -b adafruit_feather_nrf52840 samples/uart_dfu_test
 west flash
 
 # Monitorer RTT

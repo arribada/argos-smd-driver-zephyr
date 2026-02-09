@@ -28,13 +28,13 @@ This test application validates the complete OTA update flow including:
 ### Basic Build
 
 ```bash
-west build -b <your_board> samples/ota_test
+west build -b <your_board> samples/uart_dfu_test
 ```
 
 ### Build with Full OTA Test Enabled
 
 ```bash
-west build -b <your_board> samples/ota_test -- -DCONFIG_ARGOS_OTA_TEST_FULL_UPDATE=y
+west build -b <your_board> samples/uart_dfu_test -- -DCONFIG_ARGOS_OTA_TEST_FULL_UPDATE=y
 ```
 
 **⚠️ WARNING**: Enabling full OTA test will attempt a real firmware update on the device!
@@ -42,7 +42,7 @@ west build -b <your_board> samples/ota_test -- -DCONFIG_ARGOS_OTA_TEST_FULL_UPDA
 ### Build with Stress Tests
 
 ```bash
-west build -b <your_board> samples/ota_test -- -DCONFIG_ARGOS_OTA_TEST_STRESS=y
+west build -b <your_board> samples/uart_dfu_test -- -DCONFIG_ARGOS_OTA_TEST_STRESS=y
 ```
 
 ## Devicetree Configuration

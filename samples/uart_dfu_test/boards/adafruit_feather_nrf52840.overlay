@@ -7,7 +7,7 @@
 /*
  * Devicetree overlay for Adafruit Feather nRF52840 - OTA Test
  *
- * Uses uart0 for communication with the Argos SMD module (same as read_and_write sample)
+ * Uses uart0 for communication with the Argos SMD module (same as uart_cmd sample)
  * Console is redirected to USB CDC ACM for debugging via RTT
  */
 

@@ -11,7 +11,7 @@
 #include <argos-smd/argos_smd.h>
 #include <argos-smd/argos_dfu.h>
 
-LOG_MODULE_REGISTER(ota_test, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(uart_dfu_test, LOG_LEVEL_INF);
 
 /*
  * Firmware image selection

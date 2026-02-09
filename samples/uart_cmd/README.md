@@ -1,4 +1,4 @@
-# Argos SMD Read and Write Sample
+# Argos SMD UART Cmd Sample
 
 This sample is designed for the Argos SMD Wing attached to the Adafruit Feather nRF52840
 

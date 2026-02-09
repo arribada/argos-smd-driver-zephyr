@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.20.0)
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
-project(argos_ota_test)
+project(argos_uart_dfu_test)
 
 # Generate firmware array from external file if specified
 # Support both CMake variable (FIRMWARE_FILE) and Kconfig variable (CONFIG_ARGOS_OTA_FIRMWARE_FILE)
