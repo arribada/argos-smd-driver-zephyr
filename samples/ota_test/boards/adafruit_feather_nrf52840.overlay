@@ -5,96 +5,41 @@
  */
 
 /*
- * Devicetree overlay for Adafruit Feather nRF52840
+ * Devicetree overlay for Adafruit Feather nRF52840 - OTA Test
  *
- * This configures UART1 to communicate with the Argos SMD module.
- *
- * Adafruit Feather nRF52840 pinout:
- * - UART1 TX: P0.08 (D1)
- * - UART1 RX: P0.06 (D0)
- * - Or use hardware flow control if needed
- *
- * Adjust pins according to your hardware connection.
+ * Uses uart0 for communication with the Argos SMD module (same as read_and_write sample)
+ * Console is redirected to USB CDC ACM for debugging via RTT
  */
 
-&pinctrl {
-	uart1_default: uart1_default {
-		group1 {
-			psels = <NRF_PSEL(UART_TX, 0, 8)>,  /* D1 - P0.08 */
-			        <NRF_PSEL(UART_RX, 0, 6)>;  /* D0 - P0.06 */
-		};
-	};
-
-	uart1_sleep: uart1_sleep {
-		group1 {
-			psels = <NRF_PSEL(UART_TX, 0, 8)>,
-			        <NRF_PSEL(UART_RX, 0, 6)>;
-			low-power-enable;
-		};
-	};
-
-	/*
-	 * Optional: Hardware flow control configuration
-	 * Uncomment if your Argos SMD module uses RTS/CTS
-	 */
-	/*
-	uart1_default: uart1_default {
-		group1 {
-			psels = <NRF_PSEL(UART_TX, 0, 8)>,
-			        <NRF_PSEL(UART_RX, 0, 6)>,
-			        <NRF_PSEL(UART_RTS, 0, 5)>,
-			        <NRF_PSEL(UART_CTS, 0, 7)>;
-		};
-	};
-
-	uart1_sleep: uart1_sleep {
-		group1 {
-			psels = <NRF_PSEL(UART_TX, 0, 8)>,
-			        <NRF_PSEL(UART_RX, 0, 6)>,
-			        <NRF_PSEL(UART_RTS, 0, 5)>,
-			        <NRF_PSEL(UART_CTS, 0, 7)>;
-			low-power-enable;
-		};
-	};
-	*/
+/ {
+    chosen {
+        zephyr,console = &cdc_acm_uart;
+        /delete-property/ zephyr,shell-uart;
+        /delete-property/ zephyr,uart-mcumgr;
+        /delete-property/ zephyr,bt-mon-uart;
+        /delete-property/ zephyr,bt-c2h-uart;
+    };
 };
 
-&uart1 {
-	status = "okay";
-	current-speed = <9600>;
-	pinctrl-0 = <&uart1_default>;
-	pinctrl-1 = <&uart1_sleep>;
-	pinctrl-names = "default", "sleep";
+&uart0 {
+    status = "okay";
+    current-speed = <9600>;
 
-	argossmd: argos-smd {
-		compatible = "arribada,argos-smd-uart";
-		label = "ARGOS_SMD";
-
-		/*
-		 * Optional: Wakeup GPIO for low power mode
-		 *
-		 * Example using D5 (P0.27) on Feather:
-		 * wakeup-gpios = <&gpio0 27 GPIO_ACTIVE_HIGH>;
-		 *
-		 * Available Feather GPIO pins:
-		 * - D5:  P0.27
-		 * - D6:  P0.07
-		 * - D9:  P0.26
-		 * - D10: P0.27
-		 * - D11: P0.06
-		 * - D12: P0.08
-		 * - D13: P1.09 (LED)
-		 * - A0:  P0.04
-		 * - A1:  P0.05
-		 * - A2:  P0.30
-		 * - A3:  P0.28
-		 * - A4:  P0.02
-		 * - A5:  P0.03
-		 */
-	};
+    argossmd: argos-smd {
+        compatible = "arribada,argos-smd-uart";
+        label = "ARGOS_SMD";
+        /*
+         * Optional: Wakeup GPIO for low power mode
+         * wakeup-gpios = <&gpio0 27 GPIO_ACTIVE_HIGH>;
+         */
+    };
 };
 
-/*
- * RTT Console for logs via J-Link
- * No additional devicetree configuration needed - RTT works out of the box
- */
+zephyr_udc0: &usbd {
+    compatible = "nordic,nrf-usbd";
+    status = "okay";
+    cdc_acm_uart: cdc_acm_uart0 {
+        compatible = "zephyr,cdc-acm-uart";
+        label = "CDC_ACM";
+    };
+};

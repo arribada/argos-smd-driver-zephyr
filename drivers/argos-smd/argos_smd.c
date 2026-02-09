@@ -80,8 +80,6 @@ static void uart_rx_handler(const struct device *dev, void *dev_smd)
 	const struct device *argos_smd_dev = dev_smd;
 	struct argos_smd_data *drv_data = argos_smd_dev->data;
 
-	argos_smd_callback_t callback = drv_data->callback;
-
 	while (uart_irq_update(dev) && uart_irq_rx_ready(dev)) {
 		uint8_t byte;
 		int len = uart_fifo_read(dev, &byte, sizeof(byte));
@@ -101,9 +99,10 @@ static void uart_rx_handler(const struct device *dev, void *dev_smd)
 			drv_data->response.data[index] = byte;
 
 			if (byte == '\n' || byte == '\r') {
-				LOG_DBG("Response successfully received");
 				drv_data->response.data[index] = '\0';
 				atomic_set(&drv_data->status, RESPONSE_CLEAR);
+				/* Read callback NOW, not at start of handler */
+				argos_smd_callback_t callback = drv_data->callback;
 				if (callback != NULL) {
 					callback(drv_data->response.data, drv_data->user_data);
 				}

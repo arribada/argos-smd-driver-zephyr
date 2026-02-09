@@ -59,9 +59,6 @@ static void dfu_response_callback(const char *buf, void *user_data)
 		return;
 	}
 
-	/* Debug: Log all received data */
-	LOG_INF("DFU RX: '%s'", buf);
-
 	/* Store response */
 	strncpy(response_buf, buf, sizeof(response_buf) - 1);
 	response_buf[sizeof(response_buf) - 1] = '\0';
@@ -78,15 +75,20 @@ static void dfu_response_callback(const char *buf, void *user_data)
 	k_sem_give(&response_sem);
 }
 
-/* Wait for response with timeout */
-static int wait_for_response(const struct device *dev, uint32_t timeout_ms)
+/* Prepare for response (call BEFORE sending command) */
+static void prepare_for_response(const struct device *dev)
 {
 	response_received = false;
 	response_ok = false;
-
-	/* Set our callback */
+	/* Reset semaphore to ensure clean state */
+	k_sem_reset(&response_sem);
+	/* Set callback BEFORE sending command to avoid race condition */
 	argos_smd_set_callback(dev, dfu_response_callback, NULL);
+}
 
+/* Wait for response with timeout (call AFTER sending command) */
+static int wait_for_response(const struct device *dev, uint32_t timeout_ms)
+{
 	/* Wait for response */
 	int ret = k_sem_take(&response_sem, K_MSEC(timeout_ms));
 
@@ -162,9 +164,13 @@ int argos_dfu_ping(const struct device *dev)
 
 	LOG_INF("TX: 'AT+DFU=PING'");
 
+	/* Prepare callback BEFORE sending command to avoid race condition */
+	prepare_for_response(dev);
+
 	int ret = argos_send_raw(dev, "AT+DFU=PING");
 	if (ret < 0) {
 		LOG_ERR("Failed to send PING: %d", ret);
+		argos_smd_set_callback(dev, NULL, NULL);  /* Clear callback on error */
 		return ret;
 	}
 
@@ -204,9 +210,12 @@ int argos_dfu_erase(const struct device *dev)
 
 	LOG_INF("Erasing application flash...");
 
+	prepare_for_response(dev);
+
 	int ret = argos_send_raw(dev, "AT+DFU=ERASE");
 	if (ret < 0) {
 		LOG_ERR("Failed to send ERASE command: %d", ret);
+		argos_smd_set_callback(dev, NULL, NULL);
 		return ret;
 	}
 
@@ -251,9 +260,12 @@ int argos_dfu_write(const struct device *dev, uint32_t addr,
 
 	LOG_DBG("Writing %zu bytes at 0x%08X", len, addr);
 
+	prepare_for_response(dev);
+
 	int ret = argos_send_raw(dev, cmd);
 	if (ret < 0) {
 		LOG_ERR("Failed to send WRITE command: %d", ret);
+		argos_smd_set_callback(dev, NULL, NULL);
 		return ret;
 	}
 
@@ -274,9 +286,12 @@ int argos_dfu_verify(const struct device *dev, uint32_t crc32)
 
 	snprintf(cmd, sizeof(cmd), "AT+DFU=VERIFY,%08X", crc32);
 
+	prepare_for_response(dev);
+
 	int ret = argos_send_raw(dev, cmd);
 	if (ret < 0) {
 		LOG_ERR("Failed to send VERIFY command: %d", ret);
+		argos_smd_set_callback(dev, NULL, NULL);
 		return ret;
 	}
 
@@ -294,9 +309,12 @@ int argos_dfu_jump(const struct device *dev)
 {
 	LOG_INF("Jumping to application...");
 
+	prepare_for_response(dev);
+
 	int ret = argos_send_raw(dev, "AT+DFU=JUMP");
 	if (ret < 0) {
 		LOG_ERR("Failed to send JUMP command: %d", ret);
+		argos_smd_set_callback(dev, NULL, NULL);
 		return ret;
 	}
 
@@ -316,9 +334,12 @@ int argos_dfu_abort(const struct device *dev)
 {
 	LOG_WRN("Aborting DFU session...");
 
+	prepare_for_response(dev);
+
 	int ret = argos_send_raw(dev, "AT+DFU=ABORT");
 	if (ret < 0) {
 		LOG_ERR("Failed to send ABORT command: %d", ret);
+		argos_smd_set_callback(dev, NULL, NULL);
 		return ret;
 	}
 
@@ -336,8 +357,11 @@ int argos_dfu_get_status(const struct device *dev,
 {
 	LOG_DBG("Getting DFU status...");
 
+	prepare_for_response(dev);
+
 	int ret = argos_send_raw(dev, "AT+DFU=STATUS");
 	if (ret < 0) {
+		argos_smd_set_callback(dev, NULL, NULL);
 		return ret;
 	}
 
