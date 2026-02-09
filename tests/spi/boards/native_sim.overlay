@@ -1,0 +1,23 @@
+/ {
+	test_gpio: gpio@feedface {
+		compatible = "zephyr,gpio-emul";
+		reg = <0xfeedface 0x1000>;
+		gpio-controller;
+		#gpio-cells = <2>;
+	};
+
+	test_spi: spi@33334444 {
+		compatible = "zephyr,spi-emul-controller";
+		reg = <0x33334444 0x1000>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		clock-frequency = <125000>;
+		cs-gpios = <&test_gpio 0 0>;
+
+		argos_smd: argos-smd@0 {
+			compatible = "arribada,argos-smd-spi";
+			reg = <0>;
+			spi-max-frequency = <125000>;
+		};
+	};
+};

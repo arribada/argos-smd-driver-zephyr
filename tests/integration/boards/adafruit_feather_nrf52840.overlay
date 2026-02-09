@@ -14,7 +14,7 @@
     current-speed = <9600>;
 
     argossmd {
-        compatible = "arribada,argossmd";
+        compatible = "arribada,argos-smd-uart";
         /* Optional: Uncomment to enable GPIO wakeup pin control
          * wakeup-gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>;
          *

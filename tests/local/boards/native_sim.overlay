@@ -7,7 +7,7 @@
 		status = "okay";
 
 		argossmd {
-			compatible = "arribada,argossmd";
+			compatible = "arribada,argos-smd-uart";
 		};
 	};
 
