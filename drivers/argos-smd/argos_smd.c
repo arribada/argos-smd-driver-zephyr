@@ -30,7 +30,8 @@ static void argos_smd_uart_flush(const struct device *dev)
 	const struct argos_smd_config *cfg = dev->config;
 	struct argos_smd_data *drv_data = dev->data;
 
-	while (uart_fifo_read(cfg->uart_dev, NULL, 1) > 0) {
+	uint8_t tmp;
+	while (uart_fifo_read(cfg->uart_dev, &tmp, 1) > 0) {
 	}
 	memset(&drv_data->response.data, 0, ARGOS_SMD_BUF_SIZE);
 
@@ -147,7 +148,6 @@ int send_command(const struct device *dev, uint8_t *command, const uint8_t lengt
 
 	/* Send \r\n terminator as required by bootloader protocol */
 	uart_poll_out(cfg->uart_dev, '\r');
-	uart_poll_out(cfg->uart_dev, '\n');
 
 	return 0;
 }

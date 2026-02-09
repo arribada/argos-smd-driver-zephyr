@@ -144,16 +144,16 @@ The Argos SMD module is a Serial Peripheral and can be connected to the Zephyr h
 - **UART**: baudrate 9600, uses the UART Polling API for TX and the Interrupt API for RX.
 - **SPI**: uses the Zephyr SPI API for full-duplex communication.
 
-## Contributing/Developement  
+## Contributing/Developement
 
 ```
 # All run in the root directory of the project
 
 # Builds all test and run local tests
-make 
+make
 
 # Builds documentation
-make docs 
+make docs
 
 # Same as `make`
 make test
