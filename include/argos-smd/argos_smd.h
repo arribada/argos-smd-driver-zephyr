@@ -12,6 +12,26 @@ extern "C" {
 
 #define ARGOS_SMD_BUF_SIZE 255
 
+typedef enum {
+	AT_VERSION,
+	AT_PING,
+	AT_FW,
+	AT_ADDR,
+	AT_ID,
+	AT_SECKEY,
+	AT_SN,
+	AT_RCONF,
+	AT_SAVE_RCONF,
+	AT_LPM,
+	AT_MC,
+	AT_TCXO_WU,
+	AT_TX,
+	AT_PREPASS_EN,
+	AT_UDATE,
+	AT_KMAC,
+	AT_CW,
+} at_command_t;
+
 /**
  * @brief Callback invoked by when a response has been received.
  *
@@ -21,6 +41,17 @@ extern "C" {
 typedef void (*argos_smd_callback_t)(const char *buf, void *user_data);
 
 /* Library Functions */
+
+/**
+ * @brief Sends a set AT command to the Argos SMD.
+ * This function sends the "AT+[cmd]=[data]"
+ *
+ * @param dev Pointer to the device structure.
+ * @param cmd The AT command to send.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_set_command(const struct device *dev, at_command_t cmd, const char *data);
+
 /**
  * @brief Sets the address of the Argos SMD.
  * This function sends the command "AT+ADDR=<address>" to configure the device's address.
@@ -50,6 +81,16 @@ int argos_set_serial_number(const struct device *dev, const char *serial_number)
  * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
  */
 int argos_set_id(const struct device *dev, const char *id);
+
+/**
+ * @brief Sets the SECKEY of the Argos SMD.
+ * This function sends the command "AT+SECKEY=<seckey>" to configure the device's security key.
+ *
+ * @param dev Pointer to the device structure.
+ * @param seckey The key string to be set.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_set_seckey(const struct device *dev, const char *seckey);
 
 /**
  * @brief Sets the radio configuration of the Argos SMD.
@@ -201,6 +242,16 @@ int argos_smd_wakeup_enable(const struct device *dev);
  * @return 0 on success, -ENOTSUP if no wakeup GPIO is configured, negative errno on error.
  */
 int argos_smd_wakeup_disable(const struct device *dev);
+
+/**
+ * @brief Sends a read AT command to the Argos SMD.
+ * This function sends the AT+[cmd]=?
+ *
+ * @param dev Pointer to the device structure.
+ * @param cmd The AT command to send.
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_read_command(const struct device *dev, at_command_t cmd);
 
 /**
  * @brief Read version of Argos SMD.
