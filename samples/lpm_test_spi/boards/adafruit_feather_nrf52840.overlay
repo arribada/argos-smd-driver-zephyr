@@ -1,0 +1,48 @@
+/*
+ * Copyright (c) 2025 Arribada Initiative
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * LPM (low-power mode) SPI wake-test overlay for Adafruit Feather nRF52840.
+ *
+ * Wiring (Feather -> Argos SMD/STM32):
+ * - SCK  (P0.14) -> SPI_CLK  (STM32 PA1)
+ * - MOSI (P0.13) -> SPI_MOSI (STM32 PB5)
+ * - MISO (P0.15) -> SPI_MISO (STM32 PB4)
+ * - CS   (P0.10) -> SPI_NSS  (STM32 PA15)
+ * - WAKE (P0.26) -> STM32 PB3/WKUP3   (REQUIRED for this test — wake line)
+ * - RST  (P0.07) -> NRST              (OPTIONAL — see reset-gpios below)
+ *
+ * wakeup-gpios is ENABLED here: the LPM test drives WKUP3/PB3 to wake the module
+ * from STANDBY (a rising edge cold-boots it). STOP wakes on SPI activity, and
+ * SHUTDOWN needs NRST. There is no irq-gpios — the driver uses the
+ * pipelined/polled protocol, so P0.26 is free to be the wake line.
+ *
+ * reset-gpios (host NRST) is left available but OPTIONAL: wire P0.07 -> module
+ * NRST only if you want the host to reset/cold-boot the module (e.g. to recover
+ * SHUTDOWN, which does not wake on WKUP3). This test does not require it.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/* Disable NFC to use P0.09/P0.10 as GPIO */
+&uicr {
+	nfct-pins-as-gpios;
+};
+
+&spi1 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	cs-gpios = <&gpio0 10 GPIO_ACTIVE_LOW>;
+
+	argos_smd: argos-smd@0 {
+		compatible = "arribada,argos-smd-spi";
+		reg = <0>;
+		spi-max-frequency = <125000>;  /* 125 kHz - minimum for nRF52840 */
+		/* OPTIONAL host NRST control: wire P0.07 -> module NRST only if you want
+		 * the host to reset/cold-boot the module. Not used by this test (it wakes
+		 * via WKUP3); kept here so NRST is available if you choose to wire it. */
+		reset-gpios = <&gpio0 7 GPIO_ACTIVE_LOW>;
+		/* Wake line to STM32 PB3/WKUP3 (Feather D9). */
+		wakeup-gpios = <&gpio0 26 GPIO_ACTIVE_HIGH>;
+	};
+};

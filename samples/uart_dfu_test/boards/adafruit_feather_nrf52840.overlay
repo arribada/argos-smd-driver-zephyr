@@ -11,6 +11,8 @@
  * Console is redirected to USB CDC ACM for debugging via RTT
  */
 
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
 / {
     chosen {
         zephyr,console = &cdc_acm_uart;
@@ -28,10 +30,10 @@
     argossmd: argos-smd {
         compatible = "arribada,argos-smd-uart";
         label = "ARGOS_SMD";
-        /*
-         * Optional: Wakeup GPIO for low power mode
-         * wakeup-gpios = <&gpio0 27 GPIO_ACTIVE_HIGH>;
+        /* Wake the module from low power before talking to it.
+         * Feather D9 (P0.26) -> STM32 PB3/WKUP3 (same wiring as uart_cmd).
          */
+        wakeup-gpios = <&gpio0 26 GPIO_ACTIVE_HIGH>;
     };
 };
 

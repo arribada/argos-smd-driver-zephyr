@@ -154,15 +154,31 @@ static int parse_response_frame(const uint8_t *buf, size_t buf_len,
 /**
  * @brief Perform a single 64-byte SPI transaction
  */
+/* Timestamp of the last NSS cycle, to enforce ARGOS_SPI_MIN_TX_SPACING_MS
+ * between every transaction (single SPI bus). */
+static int64_t argos_spi_last_tx_uptime;
+
 static int spi_transaction_64(const struct spi_dt_spec *spi,
 			      uint8_t *tx_buf, uint8_t *rx_buf)
 {
+	/* Never clock a frame into the slave's post-transaction unarmed window
+	 * (~3ms end-of-tx detection + DMA re-arm): that causes an OVR/desync that
+	 * wedges the slave until power-cycle. Space every NSS cycle. */
+	int64_t gap = k_uptime_get() - argos_spi_last_tx_uptime;
+
+	if (gap >= 0 && gap < ARGOS_SPI_MIN_TX_SPACING_MS) {
+		k_msleep((uint32_t)(ARGOS_SPI_MIN_TX_SPACING_MS - gap));
+	}
+
 	struct spi_buf spi_tx = { .buf = tx_buf, .len = ARGOS_SPI_TRANSACTION_SIZE };
 	struct spi_buf spi_rx = { .buf = rx_buf, .len = ARGOS_SPI_TRANSACTION_SIZE };
 	struct spi_buf_set tx_set = { .buffers = &spi_tx, .count = 1 };
 	struct spi_buf_set rx_set = { .buffers = &spi_rx, .count = 1 };
 
-	return spi_transceive_dt(spi, &tx_set, &rx_set);
+	int ret = spi_transceive_dt(spi, &tx_set, &rx_set);
+
+	argos_spi_last_tx_uptime = k_uptime_get();
+	return ret;
 }
 
 int argos_spi_init(const struct device *dev)
@@ -202,6 +218,19 @@ int argos_spi_init(const struct device *dev)
 		}
 	}
 
+	/* Initialize wakeup GPIO if configured (STM32 PB3/WKUP3, initially LOW) */
+	if (cfg->wakeup_gpio.port != NULL) {
+		if (!gpio_is_ready_dt(&cfg->wakeup_gpio)) {
+			LOG_ERR("Wakeup GPIO not ready");
+			return -ENODEV;
+		}
+		int ret = gpio_pin_configure_dt(&cfg->wakeup_gpio, GPIO_OUTPUT_INACTIVE);
+		if (ret < 0) {
+			LOG_ERR("Failed to configure wakeup GPIO: %d", ret);
+			return ret;
+		}
+	}
+
 	/* Initialize mutex */
 	k_mutex_init(&data->lock);
 
@@ -227,35 +256,17 @@ static bool is_rx_all_idle(const uint8_t *buf, size_t len)
 	return true;
 }
 
-/**
- * @brief Check if RX buffer contains only busy pattern (still processing)
- */
-static bool is_rx_all_busy(const uint8_t *buf, size_t len)
-{
-	for (size_t i = 0; i < len; i++) {
-		if (buf[i] != ARGOS_SPI_BUSY_PATTERN) {
-			return false;
-		}
-	}
-	return true;
-}
-
-/**
- * @brief Check if slave is not ready (idle or busy pattern)
- */
-static bool is_slave_not_ready(const uint8_t *buf, size_t len)
-{
-	return is_rx_all_idle(buf, len) || is_rx_all_busy(buf, len);
-}
+/* Note: the old is_rx_all_busy()/is_slave_not_ready() helpers were dropped when
+ * the transact poll loop moved to "poll until a valid 0x55 frame parses"; only
+ * is_rx_all_idle() (used by argos_spi_sync) remains. */
 
 /*
- * Flash write retry configuration
- * STM32 flash write can take up to 50ms for page erase + write.
- * With 50ms delay and 10 retries, we allow up to 500ms for completion.
- * This handles worst-case scenarios during flash operations.
+ * Flash-write polling delay. The transact poll loop retries the response NOP
+ * until a valid frame parses or the per-op timeout (delay_ms) expires, waiting
+ * this long between polls. (The old fixed FLASH_WRITE_MAX_RETRIES count is gone —
+ * the loop is now bounded by the timeout, not a retry count.)
  */
-#define FLASH_WRITE_MAX_RETRIES  10   /* Max polling attempts */
-#define FLASH_WRITE_RETRY_DELAY_MS  50  /* Delay between retries */
+#define FLASH_WRITE_RETRY_DELAY_MS  50  /* Delay between response-NOP polls */
 
 /**
  * @brief Internal transaction function with configurable delay
@@ -268,7 +279,6 @@ static int argos_spi_transact_internal(const struct device *dev, uint8_t cmd,
 	const struct argos_spi_config *cfg = dev->config;
 	struct argos_spi_data *data = dev->data;
 	int ret;
-	int retries = 0;
 	bool is_flash_write = (delay_ms >= ARGOS_SPI_FLASH_DELAY_MS);
 
 	if (tx_len > ARGOS_SPI_MAX_PAYLOAD) {
@@ -310,17 +320,40 @@ static int argos_spi_transact_internal(const struct device *dev, uint8_t cmd,
 		data->rx_buf[0], data->rx_buf[1], data->rx_buf[2], data->rx_buf[3],
 		data->rx_buf[4], data->rx_buf[5], data->rx_buf[6], data->rx_buf[7]);
 
-	/* Delay for STM32 to process command */
-	k_msleep(delay_ms);
-
-	/* Build NOP frame to retrieve response */
-	data->seq_num++;
-
 	/*
-	 * Transaction 2+: Send NOP, receive response
-	 * Retry loop for flash write operations when slave is not ready
+	 * Retrieve the response with a NOP.
+	 *
+	 * For long operations (flash write/erase, and especially WRITE_TX, where the
+	 * module's handler ACKs into its buffer but then BLOCKS in the >=2s TCXO
+	 * warmup before returning and only then re-arms its SPI/DMA) the slave keeps
+	 * returning IDLE/BUSY until it is actually done. Rather than blindly sleeping
+	 * the whole worst-case time, we POLL the response NOP and stop as soon as a
+	 * real frame comes back, using delay_ms as a safety timeout. Standard
+	 * commands keep their short fixed wait then read once.
 	 */
-	do {
+	int64_t deadline = k_uptime_get() + delay_ms;
+
+	/* Initial QUIET wait before reading the response.
+	 *
+	 * Long ops must not be disturbed by SPI traffic while the slave is working
+	 * (a flash NVM program, or the TX handler busy-waiting the >=2s TCXO warmup
+	 * with IRQs enabled — every NOP would fire its SPI ISR and corrupt/stall the
+	 * in-progress op). So we wait quietly for (delay_ms - ARGOS_SPI_POLL_WINDOW_MS)
+	 * — long enough to cover the op (scales with delay_ms: ~2.5s for TX, ~0.2s
+	 * for an NVM write) — and only then poll the ACK during the trailing window.
+	 * Standard commands just wait their full short delay then read once.
+	 */
+	uint32_t blind_ms = delay_ms;
+
+	if (is_flash_write) {
+		blind_ms = (delay_ms > ARGOS_SPI_POLL_WINDOW_MS)
+				 ? (delay_ms - ARGOS_SPI_POLL_WINDOW_MS)
+				 : ARGOS_SPI_INTER_TX_DELAY_MS;
+	}
+	k_msleep(blind_ms);
+
+	for (;;) {
+		data->seq_num++;
 		build_request_frame(data->tx_buf, data->seq_num, ARGOS_SPI_CMD_NOP, NULL, 0);
 
 		LOG_DBG("TX2 [NOP seq %u]: %02X %02X %02X %02X %02X",
@@ -328,7 +361,6 @@ static int argos_spi_transact_internal(const struct device *dev, uint8_t cmd,
 			data->tx_buf[0], data->tx_buf[1], data->tx_buf[2],
 			data->tx_buf[3], data->tx_buf[4]);
 
-		/* Transaction 2: Send NOP, receive response */
 		memset(data->rx_buf, 0, sizeof(data->rx_buf));
 		ret = spi_transaction_64(&cfg->spi, data->tx_buf, data->rx_buf);
 		if (ret < 0) {
@@ -340,23 +372,32 @@ static int argos_spi_transact_internal(const struct device *dev, uint8_t cmd,
 			data->rx_buf[0], data->rx_buf[1], data->rx_buf[2], data->rx_buf[3],
 			data->rx_buf[4], data->rx_buf[5], data->rx_buf[6], data->rx_buf[7]);
 
-		/* For flash write operations, retry if slave is not ready (IDLE or BUSY) */
-		if (is_flash_write && is_slave_not_ready(data->rx_buf, 8) &&
-		    retries < FLASH_WRITE_MAX_RETRIES) {
-			retries++;
-			if (is_rx_all_busy(data->rx_buf, 8)) {
-				LOG_DBG("Slave BUSY (processing), retry %d/%d",
-					retries, FLASH_WRITE_MAX_RETRIES);
-			} else {
-				LOG_DBG("Slave IDLE (not ready), retry %d/%d",
-					retries, FLASH_WRITE_MAX_RETRIES);
-			}
-			k_msleep(FLASH_WRITE_RETRY_DELAY_MS);
-			data->seq_num++;
-			continue;  /* Retry NOP transaction */
+		/* Standard command: read once (parsed below). */
+		if (!is_flash_write) {
+			break;
 		}
-		break;  /* Got valid response or max retries reached */
-	} while (retries <= FLASH_WRITE_MAX_RETRIES);
+
+		/* Flash-write-class op (incl. WRITE_LPM): the ACK can land one or more
+		 * NOPs later and the slave returns a 0xAA/0x55/processing idle in between
+		 * (raw RX seen: 00 00 00 55 55 ...). Don't stop at the idle — poll the
+		 * NOP until a real response frame actually parses, bounded by the safety
+		 * timeout. */
+		{
+			struct argos_spi_response peek;
+
+			if (parse_response_frame(data->rx_buf, ARGOS_SPI_TRANSACTION_SIZE,
+						 &peek) == 0) {
+				break;   /* got a valid ACK frame */
+			}
+		}
+		if (k_uptime_get() >= deadline) {
+			LOG_WRN("No valid ACK within %u ms (cmd 0x%02X) - timeout",
+				delay_ms, cmd);
+			ret = -ETIMEDOUT;
+			goto unlock;
+		}
+		k_msleep(FLASH_WRITE_RETRY_DELAY_MS);
+	}
 
 	/* Parse response */
 	struct argos_spi_response resp;
@@ -439,10 +480,16 @@ static int argos_spi_write_2phase(const struct device *dev,
 	/* Inter-transaction delay for STM32 to prepare RX buffer */
 	k_msleep(1);
 
-	/* Phase 2: Send WRITE command with data (use flash delay for NVM write) */
+	/* Phase 2: Send WRITE command with data, then poll the NOP for the ACK.
+	 * WRITE_LPM is a fast RAM write (no NVM): a long flash-write blind-wait would
+	 * sail past the ACK window (the slave returns to the 0x55 idle), so use a
+	 * short timeout that polls almost immediately. NVM writes keep the long one.
+	 */
+	uint32_t wr_timeout = (write_cmd == ARGOS_SPI_CMD_WRITE_LPM)
+				    ? 300U
+				    : ARGOS_SPI_FLASH_WRITE_TIMEOUT_MS;
 	ret = argos_spi_transact_internal(dev, write_cmd, data, len,
-					  NULL, NULL, &status,
-					  ARGOS_SPI_FLASH_DELAY_MS);
+					  NULL, NULL, &status, wr_timeout);
 	if (ret < 0) {
 		LOG_ERR("Phase 2 (WRITE 0x%02X) transaction failed: %d", write_cmd, ret);
 		return ret;
@@ -568,6 +615,44 @@ int argos_spi_reset(const struct device *dev)
 	k_msleep(ARGOS_SPI_BOOT_DELAY_MS);
 
 	LOG_INF("Hardware reset complete");
+	return 0;
+}
+
+int argos_spi_wakeup_enable(const struct device *dev)
+{
+	const struct argos_spi_config *cfg = dev->config;
+
+	if (cfg->wakeup_gpio.port == NULL) {
+		LOG_WRN("Wakeup GPIO not configured");
+		return -ENOTSUP;
+	}
+
+	int ret = gpio_pin_set_dt(&cfg->wakeup_gpio, 1);
+	if (ret < 0) {
+		LOG_ERR("Failed to enable wakeup pin: %d", ret);
+		return ret;
+	}
+
+	LOG_DBG("Wakeup pin enabled (set HIGH)");
+	return 0;
+}
+
+int argos_spi_wakeup_disable(const struct device *dev)
+{
+	const struct argos_spi_config *cfg = dev->config;
+
+	if (cfg->wakeup_gpio.port == NULL) {
+		LOG_WRN("Wakeup GPIO not configured");
+		return -ENOTSUP;
+	}
+
+	int ret = gpio_pin_set_dt(&cfg->wakeup_gpio, 0);
+	if (ret < 0) {
+		LOG_ERR("Failed to disable wakeup pin: %d", ret);
+		return ret;
+	}
+
+	LOG_DBG("Wakeup pin disabled (set LOW)");
 	return 0;
 }
 
@@ -1154,9 +1239,20 @@ int argos_spi_write_tx(const struct device *dev, const uint8_t *data, size_t len
 		return -EIO;
 	}
 
-	/* Step 3: WRITE_TX (0x16) - Send actual data */
-	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_WRITE_TX, data, len,
-				 NULL, NULL, &status);
+	/* Step 3: WRITE_TX (0x16) - Send actual data.
+	 *
+	 * The module's WRITE_TX handler writes the ACK into its TX buffer, then
+	 * BLOCKS in HAL_Delay(tcxo_warmup >= 2000ms) and pushes the MAC event
+	 * before returning; its SPI DMA (which exposes the ACK to us) is only
+	 * re-armed AFTER the handler returns. transact_internal therefore POLLS the
+	 * response NOP until the ACK comes back (returning as soon as it does), with
+	 * ARGOS_SPI_TX_ACK_TIMEOUT_MS as the safety timeout. delay_ms >=
+	 * ARGOS_SPI_FLASH_DELAY_MS selects that polling path; the wait also absorbs
+	 * the module's busy window so the next commands don't fail.
+	 */
+	ret = argos_spi_transact_internal(dev, ARGOS_SPI_CMD_WRITE_TX, data, len,
+					  NULL, NULL, &status,
+					  ARGOS_SPI_TX_ACK_TIMEOUT_MS);
 	if (ret < 0) {
 		LOG_ERR("WRITE_TX failed: %d", ret);
 		return ret;
@@ -1166,11 +1262,7 @@ int argos_spi_write_tx(const struct device *dev, const uint8_t *data, size_t len
 		return -EIO;
 	}
 
-	/*
-	 * CRITICAL: Wait for STM32 to finish processing TX data.
-	 * The WRITE_TX handler does async work (FIFO, MAC queue) after sending ACK.
-	 * DMA is re-armed only after handler returns. Give STM32 time to complete.
-	 */
+	/* Small settle after the (already long) WRITE_TX wait. */
 	k_msleep(ARGOS_SPI_POST_TX_DELAY_MS);
 
 	LOG_INF("TX data queued (%zu bytes), use wait_tx_complete() to poll", len);
@@ -1226,6 +1318,25 @@ int argos_spi_set_lpm(const struct device *dev, uint8_t lpm)
 	return 0;
 }
 
+int argos_spi_set_lpm_forced(const struct device *dev, uint8_t bitmap, uint8_t forced)
+{
+	/* WRITE_LPM with [bitmap, forced]: sending only the bitmap (1 byte) clears
+	 * the forced mode, so the module never enters the deep mode. Two bytes set
+	 * the allowed bitmap AND force `forced` (forced=0 clears it). Mirrors the
+	 * AT form AT+LPM=0x<bitmap>,0x<forced>. */
+	uint8_t data[2] = { bitmap, forced };
+
+	LOG_DBG("Setting LPM bitmap 0x%02X forced 0x%02X", bitmap, forced);
+	int ret = argos_spi_write_2phase(dev,
+					 ARGOS_SPI_CMD_WRITE_LPM_REQ,
+					 ARGOS_SPI_CMD_WRITE_LPM,
+					 data, 2);
+	if (ret < 0) {
+		LOG_ERR("SET_LPM forced failed: %d", ret);
+	}
+	return ret;
+}
+
 int argos_spi_get_tcxo_wu(const struct device *dev, uint8_t *tcxo_wu, size_t *tcxo_len)
 {
 	uint8_t status;
@@ -1279,10 +1390,10 @@ int argos_spi_save_rconf(const struct device *dev)
 
 	LOG_DBG("Saving radio config to NVM...");
 
-	/* Save operation writes to flash */
+	/* Save operation writes to flash (poll until acked, bounded timeout) */
 	ret = argos_spi_transact_internal(dev, ARGOS_SPI_CMD_SAVE_RCONF, NULL, 0,
 					  NULL, NULL, &status,
-					  ARGOS_SPI_FLASH_DELAY_MS);
+					  ARGOS_SPI_FLASH_WRITE_TIMEOUT_MS);
 	if (ret < 0) {
 		return ret;
 	}
@@ -1323,6 +1434,93 @@ int argos_spi_get_rconf_raw(const struct device *dev, uint8_t *rconf_raw, size_t
 	return 0;
 }
 
+int argos_spi_get_mc(const struct device *dev, uint16_t *mc)
+{
+	uint8_t status;
+	uint8_t resp[4];
+	size_t resp_len = sizeof(resp);
+	int ret;
+
+	if (!mc) {
+		return -EINVAL;
+	}
+
+	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_READ_MC, NULL, 0,
+				 resp, &resp_len, &status);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (status != PROT_OK) {
+		LOG_ERR("GET_MC failed: status 0x%02X", status);
+		return -EIO;
+	}
+
+	if (resp_len < 2) {
+		LOG_ERR("GET_MC short response (%zu bytes)", resp_len);
+		return -EIO;
+	}
+
+	/* uint16 little-endian */
+	*mc = (uint16_t)(resp[0] | ((uint16_t)resp[1] << 8));
+	LOG_DBG("MC: %u", *mc);
+	return 0;
+}
+
+int argos_spi_set_mc(const struct device *dev, uint16_t mc)
+{
+	/* uint16 little-endian; the module folds it mod 512 */
+	uint8_t data[2] = { (uint8_t)(mc & 0xFF), (uint8_t)((mc >> 8) & 0xFF) };
+
+	LOG_DBG("Setting MC to %u", mc);
+
+	/* 2-phase write: REQ (0x2D) then WRITE (0x2E) */
+	int ret = argos_spi_write_2phase(dev,
+					 ARGOS_SPI_CMD_WRITE_MC_REQ,
+					 ARGOS_SPI_CMD_WRITE_MC,
+					 data, sizeof(data));
+	if (ret < 0) {
+		LOG_ERR("SET_MC failed: %d", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+int argos_spi_get_kcfg(const struct device *dev, uint32_t *kcfg)
+{
+	uint8_t status;
+	uint8_t resp[8];
+	size_t resp_len = sizeof(resp);
+	int ret;
+
+	if (!kcfg) {
+		return -EINVAL;
+	}
+
+	ret = argos_spi_transact(dev, ARGOS_SPI_CMD_READ_KCFG, NULL, 0,
+				 resp, &resp_len, &status);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (status != PROT_OK) {
+		LOG_ERR("GET_KCFG failed: status 0x%02X", status);
+		return -EIO;
+	}
+
+	if (resp_len < 4) {
+		LOG_ERR("GET_KCFG short response (%zu bytes)", resp_len);
+		return -EIO;
+	}
+
+	/* uint32 little-endian */
+	*kcfg = (uint32_t)resp[0] | ((uint32_t)resp[1] << 8) |
+		((uint32_t)resp[2] << 16) | ((uint32_t)resp[3] << 24);
+	LOG_DBG("KCFG: 0x%08X", *kcfg);
+	return 0;
+}
+
 /* Device tree instantiation macros */
 #define DT_DRV_COMPAT arribada_argos_smd_spi
 
@@ -1359,6 +1557,8 @@ int argos_spi_get_rconf_raw(const struct device *dev, uint8_t *rconf_raw, size_t
 		},                                                              \
 		.irq_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, irq_gpios, {0}),     \
 		.reset_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, reset_gpios, {0}), \
+		.wakeup_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, wakeup_gpios,     \
+							{0}),                  \
 	};                                                                      \
 	DEVICE_DT_INST_DEFINE(inst, argos_spi_init, NULL,                       \
 			      &argos_spi_data_##inst,                           \

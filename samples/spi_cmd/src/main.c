@@ -81,6 +81,63 @@ static int test_read_binary(const char *name,
 	return ret;
 }
 
+/* Test message counter read (uint16) */
+static int test_read_mc(void)
+{
+	uint16_t mc;
+	int ret = argos_spi_get_mc(dev, &mc);
+	if (ret == 0) {
+		LOG_INF("  MC: %u", mc);
+	}
+	return ret;
+}
+
+/* Test stack config bitmap read (uint32, read-only) */
+static int test_read_kcfg(void)
+{
+	uint32_t kcfg;
+	int ret = argos_spi_get_kcfg(dev, &kcfg);
+	if (ret == 0) {
+		LOG_INF("  KCFG: 0x%08X (TX timer %s)", kcfg,
+			(kcfg & 0x1) ? "suspended" :
+			((kcfg & 0x2) ? "resumed" : "n/a"));
+	}
+	return ret;
+}
+
+/* Test MC write: read original, write (orig+1)%512, verify, restore */
+static int test_set_mc(void)
+{
+	uint16_t orig, verify;
+	int ret = argos_spi_get_mc(dev, &orig);
+	if (ret != 0) {
+		return ret;
+	}
+	LOG_INF("  Original MC: %u", orig);
+
+	uint16_t new_mc = (uint16_t)((orig + 1) % 512);
+	ret = argos_spi_set_mc(dev, new_mc);
+	if (ret != 0) {
+		return ret;
+	}
+	k_msleep(50);
+
+	ret = argos_spi_get_mc(dev, &verify);
+	if (ret != 0) {
+		return ret;
+	}
+	if (verify != new_mc) {
+		LOG_ERR("  MC mismatch: wrote %u, read %u", new_mc, verify);
+		ret = -EIO;
+	} else {
+		LOG_INF("  MC write verified: %u", verify);
+	}
+
+	/* Restore original */
+	(void)argos_spi_set_mc(dev, orig);
+	return ret;
+}
+
 /* Test ID write: read original, write new, verify, restore */
 static int test_set_id(void)
 {
@@ -373,9 +430,17 @@ int main(void)
 		return -1;
 	}
 
-	/* Phase 1: Init - Sync protocol before starting tests */
+	/* Phase 1: Init - wake the module, then sync the protocol.
+	 *
+	 * If the module is in SHUTDOWN its SPI bus is dead until it is woken.
+	 * WAKEUP drives the optional wakeup-gpios line (STM32 PB3/WKUP3) HIGH to
+	 * wake without a cold boot; it is SKIPped when no wakeup pin is wired.
+	 * RESET (NRST) wakes the module from SHUTDOWN as a cold boot and works
+	 * with only the reset wire, so it is the reliable fallback here.
+	 */
 	LOG_INF("");
 	LOG_INF("== INIT ==");
+	RUN_TEST("WAKEUP", argos_spi_wakeup_enable(dev));
 	RUN_TEST("SYNC", argos_spi_sync(dev));
 	RUN_TEST("RESET", argos_spi_reset(dev));
 	k_msleep(400);
@@ -390,6 +455,8 @@ int main(void)
 	RUN_TEST("ADDR", test_read_binary("Addr", argos_spi_get_addr));
 	RUN_TEST("RCONF", test_read_binary("RConf", argos_spi_get_rconf));
 	RUN_TEST("RCONF_RAW", test_read_binary("RConfRaw", argos_spi_get_rconf_raw));
+	RUN_TEST("MC", test_read_mc());
+	RUN_TEST("KCFG", test_read_kcfg());
 
 	/* Phase 3: Write commands (ID/ADDR only - don't affect MAC) */
 	LOG_INF("");
@@ -397,6 +464,7 @@ int main(void)
 	RUN_TEST("SET_ID", test_set_id());
 	RUN_TEST("SET_ADDR", test_set_addr());
 	RUN_TEST("SET_SECRET_KEY", test_set_secret_key());
+	RUN_TEST("SET_MC", test_set_mc());
 
 	/* Phase 4: TX Message (before RCONF changes - RCONF change requires MAC reset) */
 	LOG_INF("");

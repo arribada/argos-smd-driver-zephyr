@@ -158,8 +158,12 @@ static int dfu_send_cmd(const struct device *dev, uint8_t cmd,
 			uint8_t *response, uint8_t *resp_len, uint32_t delay_ms)
 {
 	struct argos_spi_data *data = dev->data;
-	uint8_t tx_buf[DFU_LARGE_TX_SIZE];
-	uint8_t rx_buf[DFU_LARGE_TX_SIZE];
+	/* 2x280 bytes — keep these OFF the stack (they would overflow the caller's
+	 * stack and fault the MPU guard, e.g. during the firmware-update loop). They
+	 * are only ever touched while data->lock is held (taken below), so a single
+	 * shared static pair is safe. */
+	static uint8_t tx_buf[DFU_LARGE_TX_SIZE];
+	static uint8_t rx_buf[DFU_LARGE_TX_SIZE];
 	uint16_t idx = 0;
 	int ret;
 
@@ -322,9 +326,16 @@ static int dfu_send_cmd(const struct device *dev, uint8_t cmd,
 	LOG_DBG("Response: magic=0x%02X seq=%u status=0x%02X len=%u",
 		rsp_magic, rsp_seq, rsp_status, rsp_len);
 
-	/* Validate response length */
-	if (rsp_len > DFU_MAX_PAYLOAD) {
-		LOG_ERR("Response payload too large: %u", rsp_len);
+	/* Validate response length. The whole frame (header + data + CRC) is read
+	 * out of the 64-byte rx_buf starting at `offset`, so it MUST fit there: a
+	 * corrupt/idle response could otherwise carry a garbage len byte and make
+	 * the CRC read below run off rx_buf and HardFault. Bound against the
+	 * transaction size, not just DFU_MAX_PAYLOAD.
+	 */
+	if (rsp_len > DFU_MAX_PAYLOAD ||
+	    (offset + DFU_HEADER_SIZE + rsp_len + 1U) > DFU_TRANSACTION_SIZE) {
+		LOG_ERR("Invalid response length %u at offset %zu (transaction %u)",
+			rsp_len, offset, DFU_TRANSACTION_SIZE);
 		k_mutex_unlock(&data->lock);
 		return -EMSGSIZE;
 	}

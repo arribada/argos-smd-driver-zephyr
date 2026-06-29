@@ -154,14 +154,19 @@ static int test_enter_bootloader(const struct device *dev)
 		return ret;
 	}
 
-	LOG_INF("Waiting for bootloader to be ready...");
-	ret = argos_wait_bootloader_ready(dev, K_SECONDS(10));
+	/* Detect the bootloader baudrate (9600 in UART-DFU mode, 115200 otherwise)
+	 * and switch the host UART to it. This also confirms the bootloader is
+	 * responding, and recovers a module left in a bootloader at a baud that
+	 * differs from the application.
+	 */
+	LOG_INF("Detecting bootloader baudrate (9600/115200)...");
+	ret = argos_dfu_sync_bootloader_baud(dev);
 	if (ret < 0) {
-		LOG_ERR("RESULT: FAIL - Bootloader not ready: %d", ret);
+		LOG_ERR("RESULT: FAIL - Bootloader not responding at any baud: %d", ret);
 		return ret;
 	}
 
-	LOG_INF("RESULT: PASS - Bootloader mode entered successfully");
+	LOG_INF("RESULT: PASS - Bootloader ready at %d baud", ret);
 	return 0;
 }
 
@@ -419,6 +424,18 @@ int main(void)
 	}
 
 	LOG_INF("Argos SMD device ready");
+
+	/* Wake the module from low power before any communication (mirrors
+	 * uart_cmd). Without this the module may be asleep and silent. The wake
+	 * line (Feather D9 -> STM32 PB3/WKUP3) is declared in the overlay.
+	 */
+	int wret = argos_smd_wakeup_enable(argos);
+	if (wret == 0) {
+		LOG_INF("Wakeup pin enabled; waiting for module to be ready...");
+		k_msleep(500);
+	} else if (wret == -ENOTSUP) {
+		LOG_INF("No wakeup pin configured, continuing...");
+	}
 	LOG_INF("");
 
 	int errors = 0;

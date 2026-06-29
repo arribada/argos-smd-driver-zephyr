@@ -53,14 +53,16 @@ extern "C" {
 /**
  * @brief Maximum size of a single DFU data chunk in bytes
  *
- * Each chunk is sent as hex-encoded ASCII (2 chars per byte)
- * over AT+DFU=WRITE command. Chunk size of 64 bytes = 128 hex chars.
- * Must be aligned to 8 bytes for STM32WL flash programming.
+ * Each WRITE chunk is sent as "AT+DFU=4,<addr 4B LE hex><data hex>".
+ * Must be 8-byte aligned for STM32WL flash programming. The whole command
+ * line (~"AT+DFU=4," + 8 + N*2 chars) must fit argos_send_raw's 255-byte
+ * limit, so 112 bytes/chunk (241-char line) is the safe maximum here.
  */
-#define ARGOS_DFU_CHUNK_SIZE   64
+#define ARGOS_DFU_CHUNK_SIZE   112
 
 /**
- * @brief Application flash base address (STM32WL)
+ * @brief Default application flash base address (STM32WL), used only as a
+ * fallback — the real app start is read at runtime via argos_dfu_get_info().
  */
 #define ARGOS_DFU_APP_BASE     0x08000000UL
 
@@ -147,6 +149,22 @@ int argos_enter_bootloader(const struct device *dev);
 int argos_wait_bootloader_ready(const struct device *dev, k_timeout_t timeout);
 
 /**
+ * @brief Detect and switch to the bootloader's UART baudrate.
+ *
+ * Probes the bootloader with AT+DFU=PING at each known baudrate (9600 then
+ * 115200) and, on the first that answers +DFU=OK, leaves the UART configured
+ * at that baudrate. The STM32WL bootloader runs at 9600 when built with
+ * BL_PROTOCOL_UART, otherwise 115200 — so the host baud can be wrong even when
+ * the application talks at 9600. Requires CONFIG_UART_USE_RUNTIME_CONFIGURE=y.
+ *
+ * Call after argos_enter_bootloader(), before the DFU transfer.
+ *
+ * @param dev Pointer to the Argos SMD device
+ * @return the detected baudrate (>0) on success, -ETIMEDOUT if none respond.
+ */
+int argos_dfu_sync_bootloader_baud(const struct device *dev);
+
+/**
  * @brief Ping the bootloader
  *
  * Sends AT+DFU=PING command to check if bootloader is ready.
@@ -203,6 +221,22 @@ int argos_dfu_verify(const struct device *dev, uint32_t crc32);
  * @return 0 on success, negative errno code on failure
  */
 int argos_dfu_jump(const struct device *dev);
+
+/**
+ * @brief Query the bootloader for its info (GET_INFO, cmd id 2).
+ *
+ * Returns the application start address, maximum application size and flash
+ * page size reported by the STM32WL bootloader. argos_ota_update() uses the
+ * app start address as the write base instead of a hardcoded value.
+ *
+ * @param dev Pointer to the Argos SMD device
+ * @param app_start Out: application start address (may be NULL)
+ * @param app_max   Out: maximum application size in bytes (may be NULL)
+ * @param page_size Out: flash page size in bytes (may be NULL)
+ * @return 0 on success, negative errno code on failure
+ */
+int argos_dfu_get_info(const struct device *dev, uint32_t *app_start,
+		       uint32_t *app_max, uint32_t *page_size);
 
 /**
  * @brief Abort an active DFU session

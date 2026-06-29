@@ -97,6 +97,32 @@ int argos_smd_wakeup_disable(const struct device *dev)
 	return 0;
 }
 
+int argos_smd_set_baudrate(const struct device *dev, uint32_t baudrate)
+{
+	const struct argos_smd_config *cfg = dev->config;
+	struct uart_config uc;
+
+	int ret = uart_config_get(cfg->uart_dev, &uc);
+	if (ret != 0) {
+		LOG_ERR("uart_config_get failed: %d (enable CONFIG_UART_USE_RUNTIME_CONFIGURE)", ret);
+		return ret;
+	}
+
+	if (uc.baudrate == baudrate) {
+		return 0;
+	}
+
+	uc.baudrate = baudrate;
+	ret = uart_configure(cfg->uart_dev, &uc);
+	if (ret != 0) {
+		LOG_ERR("uart_configure(%u) failed: %d", baudrate, ret);
+		return ret;
+	}
+
+	LOG_INF("UART baudrate switched to %u", baudrate);
+	return 0;
+}
+
 static void uart_rx_handler(const struct device *dev, void *dev_smd)
 {
 	const struct device *argos_smd_dev = dev_smd;
@@ -167,8 +193,12 @@ int send_command(const struct device *dev, uint8_t *command, const uint8_t lengt
 		uart_poll_out(cfg->uart_dev, (char)command[i]);
 	}
 
-	/* Send \r\n terminator as required by bootloader protocol */
+	/* Send \r\n terminator. The application AT parser accepts a bare '\r',
+	 * but the STM32WL bootloader requires the full CRLF (the working LinkIt
+	 * v4 host always sends "\r\n"), so emit both.
+	 */
 	uart_poll_out(cfg->uart_dev, '\r');
+	uart_poll_out(cfg->uart_dev, '\n');
 
 	return 0;
 }

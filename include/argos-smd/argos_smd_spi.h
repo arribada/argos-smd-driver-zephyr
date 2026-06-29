@@ -93,14 +93,37 @@ extern "C" {
 
 /* Legacy timing aliases */
 #define ARGOS_SPI_PIPELINE_DELAY_MS   ARGOS_TIMING_STANDARD_MS
-#define ARGOS_SPI_FLASH_DELAY_MS      200   /* Flash write: page erase + rewrite ~50ms */
+#define ARGOS_SPI_FLASH_DELAY_MS      200   /* Threshold (>= this => blind window + poll path) */
+/* For long ops the slave is busy and must NOT be disturbed by SPI traffic while
+ * it works (a flash NVM program, or the TX handler busy-waiting the >=2s TCXO
+ * warmup with IRQs on — polling it then corrupts/stalls it). So we wait QUIETLY
+ * for (timeout - ARGOS_SPI_POLL_WINDOW_MS), then poll the ACK during the trailing
+ * window, bounded by the timeout. The blind part therefore scales with the op. */
+#define ARGOS_SPI_POLL_WINDOW_MS      500   /* trailing poll window before the timeout */
+#define ARGOS_SPI_FLASH_WRITE_TIMEOUT_MS 700 /* NVM write/save total: ~200ms blind + poll */
 
 /* Inter-transaction delays (internal use) */
 #define ARGOS_SPI_INTER_TX_DELAY_MS   15    /* Wait for STM32 DMA re-arm between transactions */
+#define ARGOS_SPI_MIN_TX_SPACING_MS   8     /* Min gap enforced between ANY two NSS cycles. The
+                                             * module SPI slave needs ~3ms of RX silence to detect
+                                             * end-of-transaction, then aborts + re-arms its RX DMA;
+                                             * a transaction clocked into that unarmed window causes
+                                             * an OVR/desync that wedges the slave (muet, MISO=0xFF,
+                                             * only a power-cycle recovers). Spacing every transaction
+                                             * keeps us out of that window. Host-side mitigation for
+                                             * the slave's back-to-back fragility (firmware adds a
+                                             * recovery watchdog separately). */
 #define ARGOS_SPI_RETRY_DELAY_MS      50    /* Delay between command retries */
 #define ARGOS_SPI_BOOT_DELAY_MS       500   /* Wait for module boot after reset */
 #define ARGOS_SPI_DETECT_TIMEOUT_MS   10    /* SPI activity detection timeout */
 #define ARGOS_SPI_POST_TX_DELAY_MS    100   /* Delay after TX for async processing */
+/* WRITE_TX (0x16) data phase: the module's handler ACKs into its TX buffer but
+ * then BLOCKS in HAL_Delay(tcxo_warmup) — >=2000ms per the module PROJECT_RULES —
+ * before returning, and the SPI DMA that exposes the ACK is only re-armed AFTER
+ * the handler returns. The driver POLLS the response NOP until the ACK appears
+ * (returning as soon as it does) and uses this as the safety timeout; it also
+ * absorbs the busy window so later commands don't fail. */
+#define ARGOS_SPI_TX_ACK_TIMEOUT_MS   3000  /* poll timeout: TCXO warmup (>=2000ms) + MAC push + margin */
 
 /*
  * Application Commands (0x00-0x2A)
@@ -149,6 +172,10 @@ extern "C" {
 #define ARGOS_SPI_CMD_WRITE_TCXOWU_REQ  0x29  /* Write TCXO request */
 #define ARGOS_SPI_CMD_WRITE_TCXOWU      0x2A  /* Write TCXO */
 #define ARGOS_SPI_CMD_READ_RCONF_RAW    0x2B  /* Raw radio config (16 bytes from flash) */
+#define ARGOS_SPI_CMD_READ_MC           0x2C  /* Read message counter (uint16 LE) */
+#define ARGOS_SPI_CMD_WRITE_MC_REQ      0x2D  /* Write message counter request */
+#define ARGOS_SPI_CMD_WRITE_MC          0x2E  /* Write message counter (uint16 LE, mod 512) */
+#define ARGOS_SPI_CMD_READ_KCFG         0x2F  /* Read stack config bitmap (uint32 LE, read-only) */
 
 /*
  * DFU Bootloader Commands (0x30-0x3F)
@@ -305,6 +332,7 @@ struct argos_spi_config {
 	struct spi_dt_spec spi;
 	struct gpio_dt_spec irq_gpio;    /* Optional: interrupt/ready pin */
 	struct gpio_dt_spec reset_gpio;  /* Optional: reset pin */
+	struct gpio_dt_spec wakeup_gpio; /* Optional: wake pin (STM32 PB3/WKUP3) */
 };
 
 /**
@@ -400,6 +428,35 @@ int argos_spi_get_version(const struct device *dev, char *version, size_t *versi
  *         negative errno on GPIO failure
  */
 int argos_spi_reset(const struct device *dev);
+
+/**
+ * @brief Wake the Argos SMD module from SHUTDOWN low-power mode
+ *
+ * Drives the wakeup GPIO (if configured) HIGH. In SHUTDOWN the STM32WL55
+ * powers down its VCORE domain and can only be woken by a rising edge on
+ * WKUP3 = STM32 PB3 (or by NRST/RTC). Wire the configured GPIO to STM32 PB3
+ * and call this before communicating with a module that may be asleep. Unlike
+ * argos_spi_reset(), this resumes the module without a cold boot, preserving
+ * its RAM state. Keep the pin HIGH while communicating, then call
+ * argos_spi_wakeup_disable() to allow the module back into low power.
+ *
+ * @param dev Pointer to device structure
+ * @return 0 on success, -ENOTSUP if wakeup GPIO not configured,
+ *         negative errno on GPIO failure
+ */
+int argos_spi_wakeup_enable(const struct device *dev);
+
+/**
+ * @brief Release the wakeup GPIO (drive it LOW)
+ *
+ * Counterpart to argos_spi_wakeup_enable(). Drives the wakeup GPIO LOW so the
+ * module is allowed to re-enter low power mode.
+ *
+ * @param dev Pointer to device structure
+ * @return 0 on success, -ENOTSUP if wakeup GPIO not configured,
+ *         negative errno on GPIO failure
+ */
+int argos_spi_wakeup_disable(const struct device *dev);
 
 /**
  * @brief Run SPI diagnostic test
@@ -608,6 +665,21 @@ int argos_spi_get_lpm(const struct device *dev, uint8_t *lpm);
 int argos_spi_set_lpm(const struct device *dev, uint8_t lpm);
 
 /**
+ * @brief Set low power mode with an explicit forced mode (WRITE_LPM [bitmap,forced])
+ *
+ * The LPM value is a BITMAP: SLEEP=0x01, STOP=0x02, STANDBY=0x04, SHUTDOWN=0x08.
+ * Sending only the bitmap (argos_spi_set_lpm) clears the forced mode, so the
+ * module never actually enters the deep mode; this sends [bitmap, forced] so the
+ * mode is allowed AND forced. forced=0 clears the force.
+ *
+ * @param dev Pointer to device structure
+ * @param bitmap Allowed-modes bitmap (e.g. 0x04 for STANDBY)
+ * @param forced Mode to force now (e.g. 0x04), or 0 to clear
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_set_lpm_forced(const struct device *dev, uint8_t bitmap, uint8_t forced);
+
+/**
  * @brief Get TCXO warmup timer value
  *
  * @param dev Pointer to device structure
@@ -650,6 +722,42 @@ int argos_spi_save_rconf(const struct device *dev);
  * @return 0 on success, negative errno on failure
  */
 int argos_spi_get_rconf_raw(const struct device *dev, uint8_t *rconf_raw, size_t *rconf_len);
+
+/**
+ * @brief Read the message counter (MC).
+ *
+ * SPI equivalent of the UART AT+MC query. Returns the current 9-bit message
+ * counter (0..511).
+ *
+ * @param dev Pointer to device structure
+ * @param mc Pointer to receive the message counter (uint16)
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_mc(const struct device *dev, uint16_t *mc);
+
+/**
+ * @brief Write the message counter (MC).
+ *
+ * SPI equivalent of the UART AT+MC set. The value is folded into the 9-bit
+ * protocol range (mod 512) by the module. Uses the 2-phase REQ/WRITE protocol.
+ *
+ * @param dev Pointer to device structure
+ * @param mc Message counter value to set
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_set_mc(const struct device *dev, uint16_t mc);
+
+/**
+ * @brief Read the stack configuration bitmap (KCFG).
+ *
+ * SPI equivalent of the UART AT+KCFG query. Read-only (bit0 = L1 TX-period
+ * timer suspended, bit1 = resumed). There is no SPI write for KCFG.
+ *
+ * @param dev Pointer to device structure
+ * @param kcfg Pointer to receive the config bitmap (uint32)
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_kcfg(const struct device *dev, uint32_t *kcfg);
 
 /** @} */ /* end of spi_api */
 

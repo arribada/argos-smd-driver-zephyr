@@ -153,6 +153,14 @@ int main(void)
 	int ret = argos_smd_wakeup_enable(dev_smd);
 	if (ret == 0) {
 		LOG_INF("Wakeup pin enabled");
+		/*
+		 * Exiting STM32WL55 SHUTDOWN via WKUP3/PB3 is a cold boot: the
+		 * module resets and re-runs its firmware before its UART is
+		 * ready. Give it time to boot before sending the first command,
+		 * otherwise the ping is sent into a module that is still booting
+		 * and is lost.
+		 */
+		k_msleep(500);
 	} else if (ret == -ENOTSUP) {
 		LOG_INF("No wakeup pin configured, continuing...");
 	}

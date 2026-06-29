@@ -37,4 +37,17 @@ properties:
     type: phandle-array
     description: |
       Optional hardware reset GPIO pin. When configured, can be used to
-      perform a hardware reset of the Argos SMD module.
+      perform a hardware reset of the Argos SMD module. Toggling reset
+      (NRST) also wakes the module from SHUTDOWN, but as a cold boot.
+
+  wakeup-gpios:
+    type: phandle-array
+    description: |
+      Optional wake-up GPIO pin, wired to the STM32 PB3 / WKUP3 line. In
+      SHUTDOWN low-power mode the STM32WL55 powers down its VCORE domain and
+      the SPI bus is dead; it can only be woken by a rising edge on WKUP3
+      (PB3), by NRST, or by its internal RTC. Use argos_spi_wakeup_enable()
+      to drive this pin HIGH before communicating with a module that may be in
+      SHUTDOWN, and argos_spi_wakeup_disable() to release it. Unlike a reset,
+      this wakes the module without a cold boot. If not specified, wake the
+      module from SHUTDOWN via reset-gpios (NRST) instead.

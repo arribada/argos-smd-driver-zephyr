@@ -1,3 +1,5 @@
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
 / {
     chosen {
 	   	zephyr,console = &cdc_acm_uart;
@@ -15,12 +17,22 @@
 
     argos_smd {
         compatible = "arribada,argos-smd-uart";
-        /* Optional: Uncomment to enable GPIO wakeup pin control
-         * wakeup-gpios = <&gpio0 26 GPIO_ACTIVE_HIGH>;
+
+        /*
+         * Wake-up line for the STM32WL55 SHUTDOWN low-power mode.
          *
-         * Use argos_smd_wakeup_enable() to set HIGH before communicating
-         * Use argos_smd_wakeup_disable() to set LOW when done
+         * In SHUTDOWN the STM32WL powers down its whole VCORE domain: the UART
+         * (and SPI) are dead and the module can ONLY be woken by a rising edge
+         * on WKUP3 = STM32 PB3, by NRST, or by its internal RTC. The Kineis
+         * firmware arms WKUP3/PB3 on a rising edge, so the host must drive this
+         * pin HIGH before talking to a module that may be in SHUTDOWN.
+         *
+         * Required wiring:  Feather D9 (P0.26)  ->  STM32 PB3 / WKUP3
+         *
+         * The sample calls argos_smd_wakeup_enable() (drives this pin HIGH)
+         * before communicating and argos_smd_wakeup_disable() (LOW) when done.
          */
+        wakeup-gpios = <&gpio0 26 GPIO_ACTIVE_HIGH>;
     };
 };
 

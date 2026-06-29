@@ -35,6 +35,25 @@ LOG_MODULE_REGISTER(argos_dfu, CONFIG_ARGOS_SMD_DFU_LOG_LEVEL);
 #define DFU_RESPONSE_OK      "+DFU=OK"
 #define DFU_RESPONSE_ERR     "+DFU=ERR"
 
+/* AT-layer DFU command ids — must match the STM32WL bootloader UART parser.
+ * Reference: working LinkIt v4 host (smd_sat_cmd_at.cpp) sends "AT+DFU=<id>[,<hex>]".
+ */
+/* The STM32WL in-app bootloader (argos-smd firmware v3.8.0, Bootloader/Src/
+ * bl_main.c) parses DFU commands by TEXT NAME, e.g. "AT+DFU=PING", NOT by a
+ * numeric id. GET_INFO is named "INFO". WRITE/VERIFY take their address/CRC as
+ * an ASCII hex NUMBER (strtoul base 16), not as little-endian bytes.
+ */
+#define DFU_AT_CMD_PING      "PING"
+#define DFU_AT_CMD_GET_INFO  "INFO"
+#define DFU_AT_CMD_ERASE     "ERASE"
+#define DFU_AT_CMD_WRITE     "WRITE"
+#define DFU_AT_CMD_READ      "READ"
+#define DFU_AT_CMD_VERIFY    "VERIFY"
+#define DFU_AT_CMD_JUMP      "JUMP"
+
+/* Re-send a DFU command this many times if the reply times out (RX byte loss). */
+#define DFU_CMD_RETRIES      3
+
 /* Internal state for legacy API compatibility */
 static struct {
 	uint32_t write_addr;      /* Current write address */
@@ -108,6 +127,46 @@ static int wait_for_response(const struct device *dev, uint32_t timeout_ms)
 	return 0;
 }
 
+/* Send a numeric DFU command "AT+DFU=<id>[,<hex>]" and wait for +DFU=OK.
+ * This matches the STM32WL bootloader UART protocol (numeric command ids).
+ */
+static int dfu_cmd(const struct device *dev, const char *name,
+		   const char *params, uint32_t timeout_ms)
+{
+	char cmd[16 + 8 + ARGOS_DFU_CHUNK_SIZE * 2 + 8];
+
+	if (params != NULL && params[0] != '\0') {
+		snprintf(cmd, sizeof(cmd), "AT+DFU=%s,%s", name, params);
+	} else {
+		snprintf(cmd, sizeof(cmd), "AT+DFU=%s", name);
+	}
+
+	/* Retry on timeout only. The nRF legacy UART (1-byte FIFO) can drop an RX
+	 * byte at 9600 when the CPU is busy (e.g. logging), so the bootloader's
+	 * reply line is occasionally missed. All DFU commands are idempotent — we
+	 * re-send the same address/data — so re-issuing is safe. A real +DFU=ERR
+	 * (-EIO) is returned immediately without retrying.
+	 */
+	int ret = -ETIMEDOUT;
+
+	for (int attempt = 0; attempt < DFU_CMD_RETRIES; attempt++) {
+		prepare_for_response(dev);
+
+		ret = argos_send_raw(dev, cmd);
+		if (ret < 0) {
+			argos_smd_set_callback(dev, NULL, NULL);
+			return ret;
+		}
+
+		ret = wait_for_response(dev, timeout_ms);
+		if (ret != -ETIMEDOUT) {
+			break;  /* success (+DFU=OK) or a real error (+DFU=ERR) */
+		}
+	}
+
+	return ret;
+}
+
 /* Convert binary data to hexadecimal ASCII string */
 static void bin_to_hex(const uint8_t *bin, size_t bin_len, char *hex)
 {
@@ -118,6 +177,21 @@ static void bin_to_hex(const uint8_t *bin, size_t bin_len, char *hex)
 		hex[i * 2 + 1] = hex_chars[bin[i] & 0x0F];
 	}
 	hex[bin_len * 2] = '\0';
+}
+
+/* Decode one hex nibble, or -1 if not a hex digit */
+static int hex_nibble(char c)
+{
+	if (c >= '0' && c <= '9') {
+		return c - '0';
+	}
+	if (c >= 'a' && c <= 'f') {
+		return c - 'a' + 10;
+	}
+	if (c >= 'A' && c <= 'F') {
+		return c - 'A' + 10;
+	}
+	return -1;
 }
 
 /* Initialize module */
@@ -138,10 +212,13 @@ int argos_enter_bootloader(const struct device *dev)
 {
 	dfu_init();
 
-	LOG_INF("TX: 'AT+BOOT' - entering bootloader mode...");
+	LOG_INF("TX: 'AT+BOOT=' - entering bootloader mode...");
 
-	/* Send AT+BOOT to application - it will jump to bootloader */
-	int ret = argos_send_raw(dev, "AT+BOOT");
+	/* Send AT+BOOT= to application - it will jump to bootloader.
+	 * NOTE: the trailing '=' is required by the firmware AT parser
+	 * (the working LinkIt v4 host sends "AT+BOOT=").
+	 */
+	int ret = argos_send_raw(dev, "AT+BOOT=");
 	if (ret < 0) {
 		LOG_ERR("Failed to send BOOT command: %d", ret);
 		return ret;
@@ -162,19 +239,7 @@ int argos_dfu_ping(const struct device *dev)
 {
 	dfu_init();
 
-	LOG_INF("TX: 'AT+DFU=PING'");
-
-	/* Prepare callback BEFORE sending command to avoid race condition */
-	prepare_for_response(dev);
-
-	int ret = argos_send_raw(dev, "AT+DFU=PING");
-	if (ret < 0) {
-		LOG_ERR("Failed to send PING: %d", ret);
-		argos_smd_set_callback(dev, NULL, NULL);  /* Clear callback on error */
-		return ret;
-	}
-
-	ret = wait_for_response(dev, ARGOS_DFU_RESPONSE_TIMEOUT_MS);
+	int ret = dfu_cmd(dev, DFU_AT_CMD_PING, NULL, ARGOS_DFU_RESPONSE_TIMEOUT_MS);
 	if (ret == 0) {
 		LOG_INF("Bootloader responded OK");
 	}
@@ -204,23 +269,61 @@ int argos_wait_bootloader_ready(const struct device *dev, k_timeout_t timeout)
 	return -ETIMEDOUT;
 }
 
+int argos_dfu_sync_bootloader_baud(const struct device *dev)
+{
+	dfu_init();
+
+	/* Try the current (devicetree default) baudrate first — no UART
+	 * reconfigure needed. For the common case where the application and the
+	 * bootloader use the same baud (both 9600 in UART-DFU mode) this is all
+	 * that is required.
+	 */
+	for (int attempt = 0; attempt < 8; attempt++) {
+		if (argos_dfu_ping(dev) == 0) {
+			LOG_INF("Bootloader ready at current baud");
+			return 0;
+		}
+		k_msleep(200);
+	}
+
+#ifdef CONFIG_UART_USE_RUNTIME_CONFIGURE
+	/* Fallback: probe other known baudrates (9600/115200). Only available
+	 * when runtime UART reconfigure is enabled.
+	 */
+	static const uint32_t candidate_bauds[] = {9600, 115200};
+
+	for (size_t i = 0; i < ARRAY_SIZE(candidate_bauds); i++) {
+		uint32_t baud = candidate_bauds[i];
+
+		LOG_INF("Probing bootloader at %u baud...", baud);
+
+		if (argos_smd_set_baudrate(dev, baud) != 0) {
+			continue;
+		}
+		k_msleep(50);
+
+		for (int attempt = 0; attempt < 3; attempt++) {
+			if (argos_dfu_ping(dev) == 0) {
+				LOG_INF("Bootloader detected at %u baud", baud);
+				return (int)baud;
+			}
+			k_msleep(100);
+		}
+	}
+#endif /* CONFIG_UART_USE_RUNTIME_CONFIGURE */
+
+	LOG_ERR("Bootloader not responding");
+	return -ETIMEDOUT;
+}
+
 int argos_dfu_erase(const struct device *dev)
 {
 	dfu_init();
 
 	LOG_INF("Erasing application flash...");
 
-	prepare_for_response(dev);
-
-	int ret = argos_send_raw(dev, "AT+DFU=ERASE");
-	if (ret < 0) {
-		LOG_ERR("Failed to send ERASE command: %d", ret);
-		argos_smd_set_callback(dev, NULL, NULL);
-		return ret;
-	}
-
-	/* Erase takes longer - wait with extended timeout */
-	ret = wait_for_response(dev, ARGOS_DFU_ERASE_DELAY_MS);
+	/* ERASE = cmd id 3; flash erase is slow (~2-3 s) so allow 10 s */
+	int ret = dfu_cmd(dev, DFU_AT_CMD_ERASE, NULL, 10000);
 	if (ret < 0) {
 		LOG_ERR("Erase failed: %d", ret);
 		return ret;
@@ -238,80 +341,44 @@ int argos_dfu_erase(const struct device *dev)
 int argos_dfu_write(const struct device *dev, uint32_t addr,
 		    const uint8_t *data, size_t len)
 {
-	/* Command buffer: "AT+DFU=WRITE," + 8 hex addr + "," + 128 hex data + null */
-	char cmd[16 + 8 + 1 + ARGOS_DFU_CHUNK_SIZE * 2 + 1];
-	char hex_data[ARGOS_DFU_CHUNK_SIZE * 2 + 1];
+	/* WRITE params: "<addr_hex>,<data_hex>" — the bootloader parses the address
+	 * as an ASCII hex NUMBER (strtoul base 16), then a comma, then the data as
+	 * hex bytes. dfu_cmd() prepends "AT+DFU=WRITE,".
+	 */
+	char params[8 + 1 + ARGOS_DFU_CHUNK_SIZE * 2 + 1];
 
 	if (data == NULL) {
 		LOG_ERR("Data pointer is NULL");
 		return -EINVAL;
 	}
 
-	if (len > ARGOS_DFU_CHUNK_SIZE) {
-		LOG_ERR("Chunk size %zu exceeds maximum %d", len, ARGOS_DFU_CHUNK_SIZE);
+	if (len == 0 || len > ARGOS_DFU_CHUNK_SIZE) {
+		LOG_ERR("Invalid chunk size %zu (max %d)", len, ARGOS_DFU_CHUNK_SIZE);
 		return -EINVAL;
 	}
 
-	if (len == 0) {
-		LOG_ERR("Cannot write empty chunk");
-		return -EINVAL;
-	}
-
-	/* STM32 flash requires 8-byte aligned writes */
-	if ((addr & 0x7) != 0) {
-		LOG_ERR("Address 0x%08X not 8-byte aligned", addr);
-		return -EINVAL;
-	}
-
-	if ((len & 0x7) != 0) {
-		LOG_ERR("Length %zu not 8-byte aligned", len);
-		return -EINVAL;
-	}
-
-	/* Convert binary data to hex string */
-	bin_to_hex(data, len, hex_data);
-
-	/* Build command: AT+DFU=WRITE,<addr_hex>,<data_hex> */
-	snprintf(cmd, sizeof(cmd), "AT+DFU=WRITE,%08X,%s", addr, hex_data);
+	int n = snprintf(params, sizeof(params), "%08X,", addr);  /* addr as hex number */
+	bin_to_hex(data, len, params + n);                        /* append data hex */
 
 	LOG_DBG("Writing %zu bytes at 0x%08X", len, addr);
 
-	prepare_for_response(dev);
-
-	int ret = argos_send_raw(dev, cmd);
-	if (ret < 0) {
-		LOG_ERR("Failed to send WRITE command: %d", ret);
-		argos_smd_set_callback(dev, NULL, NULL);
-		return ret;
-	}
-
-	ret = wait_for_response(dev, ARGOS_DFU_RESPONSE_TIMEOUT_MS);
+	int ret = dfu_cmd(dev, DFU_AT_CMD_WRITE, params, 3000);
 	if (ret < 0) {
 		LOG_ERR("Write failed at 0x%08X: %d", addr, ret);
-		return ret;
 	}
-
-	return 0;
+	return ret;
 }
 
 int argos_dfu_verify(const struct device *dev, uint32_t crc32)
 {
-	char cmd[32];
+	char params[9];
 
 	LOG_INF("Verifying firmware CRC32: 0x%08X", crc32);
 
-	snprintf(cmd, sizeof(cmd), "AT+DFU=VERIFY,%08X", crc32);
+	/* CRC passed as an ASCII hex NUMBER (bootloader uses strtoul base 16). */
+	snprintf(params, sizeof(params), "%08X", crc32);
 
-	prepare_for_response(dev);
-
-	int ret = argos_send_raw(dev, cmd);
-	if (ret < 0) {
-		LOG_ERR("Failed to send VERIFY command: %d", ret);
-		argos_smd_set_callback(dev, NULL, NULL);
-		return ret;
-	}
-
-	ret = wait_for_response(dev, ARGOS_DFU_RESPONSE_TIMEOUT_MS);
+	int ret = dfu_cmd(dev, DFU_AT_CMD_VERIFY, params, 5000);
 	if (ret < 0) {
 		LOG_ERR("Verify failed: %d", ret);
 		return ret;
@@ -325,22 +392,23 @@ int argos_dfu_jump(const struct device *dev)
 {
 	LOG_INF("Jumping to application...");
 
+	/* JUMP is special: a successful VERIFY already moved the bootloader into
+	 * its VALIDATE state, after which it auto-jumps to the application on its
+	 * own and stops reading AT+DFU commands. So this explicit JUMP usually gets
+	 * no reply, and the module is already rebooting. Send it exactly ONCE (the
+	 * generic retry path must NOT be used — a retry would be delivered to the
+	 * rebooting application, not the bootloader) and ignore a timeout.
+	 */
 	prepare_for_response(dev);
-
-	int ret = argos_send_raw(dev, "AT+DFU=JUMP");
-	if (ret < 0) {
-		LOG_ERR("Failed to send JUMP command: %d", ret);
-		argos_smd_set_callback(dev, NULL, NULL);
-		return ret;
+	if (argos_send_raw(dev, "AT+DFU=" DFU_AT_CMD_JUMP) == 0) {
+		int ret = wait_for_response(dev, ARGOS_DFU_RESPONSE_TIMEOUT_MS);
+		if (ret < 0) {
+			LOG_INF("No JUMP reply (device already jumped) - OK");
+		}
 	}
+	argos_smd_set_callback(dev, NULL, NULL);
 
-	ret = wait_for_response(dev, ARGOS_DFU_RESPONSE_TIMEOUT_MS);
-	if (ret < 0) {
-		LOG_WRN("Jump response: %d (device may have jumped)", ret);
-		/* Device might have already jumped - not necessarily an error */
-	}
-
-	/* Wait for device to reboot */
+	/* Wait for device to reboot into the application */
 	k_msleep(ARGOS_DFU_BOOT_DELAY_MS);
 
 	return 0;
@@ -348,45 +416,23 @@ int argos_dfu_jump(const struct device *dev)
 
 int argos_dfu_abort(const struct device *dev)
 {
-	LOG_WRN("Aborting DFU session...");
+	ARG_UNUSED(dev);
 
-	prepare_for_response(dev);
-
-	int ret = argos_send_raw(dev, "AT+DFU=ABORT");
-	if (ret < 0) {
-		LOG_ERR("Failed to send ABORT command: %d", ret);
-		argos_smd_set_callback(dev, NULL, NULL);
-		return ret;
-	}
-
-	ret = wait_for_response(dev, ARGOS_DFU_RESPONSE_TIMEOUT_MS);
-
-	/* Reset state */
+	/* The STM32WL UART bootloader has no confirmed AT 'abort' command id, so
+	 * just clear local session state. To leave the bootloader cleanly, use
+	 * argos_dfu_jump() (cmd id 8).
+	 */
 	dfu_state.session_active = false;
-
-	LOG_INF("DFU session aborted");
-	return ret;
+	LOG_INF("DFU session aborted (local state cleared)");
+	return 0;
 }
 
 int argos_dfu_get_status(const struct device *dev,
 			 uint32_t *progress, enum argos_dfu_state *state)
 {
-	LOG_DBG("Getting DFU status...");
+	ARG_UNUSED(dev);
 
-	prepare_for_response(dev);
-
-	int ret = argos_send_raw(dev, "AT+DFU=STATUS");
-	if (ret < 0) {
-		argos_smd_set_callback(dev, NULL, NULL);
-		return ret;
-	}
-
-	ret = wait_for_response(dev, ARGOS_DFU_RESPONSE_TIMEOUT_MS);
-	if (ret < 0) {
-		return ret;
-	}
-
-	/* Parse response - for now just return internal state */
+	/* No confirmed AT status command id — report local transfer state. */
 	if (progress) {
 		*progress = dfu_state.bytes_written;
 	}
@@ -394,6 +440,62 @@ int argos_dfu_get_status(const struct device *dev,
 		*state = dfu_state.session_active ? ARGOS_DFU_TRANSFERRING : ARGOS_DFU_IDLE;
 	}
 
+	return 0;
+}
+
+int argos_dfu_get_info(const struct device *dev, uint32_t *app_start,
+		       uint32_t *app_max, uint32_t *page_size)
+{
+	dfu_init();
+
+	/* GET_INFO = cmd id 2; reply: +DFU=OK,<hex> with
+	 *   version[3] | app_start[4 LE] | app_max[4 LE] | page_size[4 LE]
+	 */
+	int ret = dfu_cmd(dev, DFU_AT_CMD_GET_INFO, NULL, ARGOS_DFU_RESPONSE_TIMEOUT_MS);
+	if (ret < 0) {
+		return ret;
+	}
+
+	const char *comma = strchr(response_buf, ',');
+	if (comma == NULL) {
+		LOG_ERR("GET_INFO: no data in response '%s'", response_buf);
+		return -EIO;
+	}
+
+	const char *hex = comma + 1;
+	uint8_t info[32];
+	size_t n = 0;
+	while (n < sizeof(info) && hex[0] && hex[1]) {
+		int hi = hex_nibble(hex[0]);
+		int lo = hex_nibble(hex[1]);
+		if (hi < 0 || lo < 0) {
+			break;
+		}
+		info[n++] = (uint8_t)((hi << 4) | lo);
+		hex += 2;
+	}
+
+	if (n < 15) {
+		LOG_ERR("GET_INFO: short data (%zu bytes)", n);
+		return -EIO;
+	}
+
+	uint32_t start = info[3] | (info[4] << 8) | (info[5] << 16) | ((uint32_t)info[6] << 24);
+	uint32_t max   = info[7] | (info[8] << 8) | (info[9] << 16) | ((uint32_t)info[10] << 24);
+	uint32_t page  = info[11] | (info[12] << 8) | (info[13] << 16) | ((uint32_t)info[14] << 24);
+
+	if (app_start) {
+		*app_start = start;
+	}
+	if (app_max) {
+		*app_max = max;
+	}
+	if (page_size) {
+		*page_size = page;
+	}
+
+	LOG_INF("Bootloader info: BL v%u.%u.%u app_start=0x%08X app_max=%u page=%u",
+		info[0], info[1], info[2], start, max, page);
 	return 0;
 }
 
@@ -425,12 +527,30 @@ int argos_ota_update(const struct device *dev,
 		return ret;
 	}
 
-	/* Step 3: Wait for bootloader to be ready */
-	LOG_INF("Step 2/6: Waiting for bootloader...");
-	ret = argos_wait_bootloader_ready(dev, K_SECONDS(10));
+	/* Step 3: Wait for bootloader to be ready, auto-detecting its baudrate
+	 * (9600 in UART-DFU mode, 115200 otherwise).
+	 */
+	LOG_INF("Step 2/6: Waiting for bootloader (auto-baud)...");
+	ret = argos_dfu_sync_bootloader_baud(dev);
 	if (ret < 0) {
-		LOG_ERR("Bootloader not ready: %d", ret);
+		LOG_ERR("Bootloader not ready at any baud: %d", ret);
 		return ret;
+	}
+
+	/* Get the application start address from the bootloader (do NOT hardcode:
+	 * writing at the flash base would clobber the bootloader). Falls back to
+	 * the default base if the bootloader doesn't report it.
+	 */
+	uint32_t app_start = ARGOS_DFU_APP_BASE;
+	uint32_t app_max = 0;
+	ret = argos_dfu_get_info(dev, &app_start, &app_max, NULL);
+	if (ret < 0) {
+		LOG_WRN("GET_INFO failed (%d); using default app base 0x%08X", ret, app_start);
+		app_start = ARGOS_DFU_APP_BASE;
+	}
+	if (app_max != 0 && fw_size > app_max) {
+		LOG_ERR("Firmware (%zu B) exceeds bootloader app_max (%u B)", fw_size, app_max);
+		return -EFBIG;
 	}
 
 	/* Step 4: Erase flash */
@@ -441,9 +561,11 @@ int argos_ota_update(const struct device *dev,
 		return ret;
 	}
 
-	/* Step 5: Write all firmware chunks */
-	LOG_INF("Step 4/6: Transferring firmware data...");
-	uint32_t addr = ARGOS_DFU_APP_BASE;
+	/* Step 5: Write all firmware chunks (starting at the bootloader-reported
+	 * application start address).
+	 */
+	LOG_INF("Step 4/6: Transferring firmware data to 0x%08X...", app_start);
+	uint32_t addr = app_start;
 	size_t offset = 0;
 	uint32_t last_progress_percent = 0;
 

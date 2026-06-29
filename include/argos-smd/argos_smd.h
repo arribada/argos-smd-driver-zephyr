@@ -266,6 +266,20 @@ int argos_smd_wakeup_enable(const struct device *dev);
 int argos_smd_wakeup_disable(const struct device *dev);
 
 /**
+ * @brief Change the UART baudrate used to talk to the Argos SMD at runtime.
+ *
+ * Useful when the module's bootloader runs at a different baudrate than the
+ * application (the STM32WL bootloader uses 9600 in UART-DFU mode but 115200
+ * otherwise). Requires CONFIG_UART_USE_RUNTIME_CONFIGURE=y.
+ *
+ * @param dev Pointer to the device structure.
+ * @param baudrate Target baudrate (e.g. 9600 or 115200).
+ * @return 0 on success, negative errno on error (e.g. -ENOSYS if runtime
+ *         reconfigure is not enabled).
+ */
+int argos_smd_set_baudrate(const struct device *dev, uint32_t baudrate);
+
+/**
  * @brief Sends a read AT command to the Argos SMD.
  * This function sends the AT+[cmd]=?
  *
