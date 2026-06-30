@@ -150,7 +150,10 @@ int argos_set_prepass_enable(const struct device *dev, const char *prepass);
  * This function sends the command "AT+LPM=<lpm>" to configure the device.
  *
  * @param dev Pointer to the device structure.
- * @param lpm The LPM mode string to be set. 0 NONE, 1 SLEEP, 2 STOP, 3 STANDBY, 4 SHUTDOWN
+ * @param lpm LPM value as a HEX bitmap string, e.g. "0x2" (NONE=0x00, SLEEP=0x01, STOP=0x02,
+ *            STANDBY=0x04, SHUTDOWN=0x08). Decimal is rejected (+ERROR=1200). The bitmap alone
+ *            sets the allowed mask and clears the forced mode; to force a mode pass
+ *            "0x<bitmap>,0x<forced>" (e.g. "0x4,0x4" to enter STANDBY).
  * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
  */
 int argos_set_lpm(const struct device *dev, const char *lpm);

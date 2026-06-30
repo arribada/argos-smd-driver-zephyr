@@ -650,16 +650,19 @@ int argos_spi_sync(const struct device *dev);
  * @brief Get low power mode setting
  *
  * @param dev Pointer to device structure
- * @param lpm Pointer to receive LPM value (0=NONE, 1=SLEEP, 2=STOP, 3=STANDBY, 4=SHUTDOWN)
+ * @param lpm Pointer to receive the LPM bitmap (NONE=0x00, SLEEP=0x01, STOP=0x02,
+ *            STANDBY=0x04, SHUTDOWN=0x08)
  * @return 0 on success, negative errno on failure
  */
 int argos_spi_get_lpm(const struct device *dev, uint8_t *lpm);
 
 /**
- * @brief Set low power mode
+ * @brief Set the allowed low-power-mode bitmap (clears the forced mode)
  *
  * @param dev Pointer to device structure
- * @param lpm LPM value (0=NONE, 1=SLEEP, 2=STOP, 3=STANDBY, 4=SHUTDOWN)
+ * @param lpm Allowed-modes LPM bitmap (NONE=0x00, SLEEP=0x01, STOP=0x02, STANDBY=0x04,
+ *            SHUTDOWN=0x08). This sets the allowed mask and clears the forced mode, so it
+ *            does not enter a deep mode by itself — use argos_spi_set_lpm_forced() for that.
  * @return 0 on success, negative errno on failure
  */
 int argos_spi_set_lpm(const struct device *dev, uint8_t lpm);

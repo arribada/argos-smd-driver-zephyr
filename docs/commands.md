@@ -42,7 +42,7 @@ Write commands use the format `AT+<CMD>=<value>` and return `+<CMD>=OK` or `+<CM
 | `AT+RCONF=<hex>` | argos_set_radioconf() | Set radio configuration |
 | `AT+SAVE_RCONF=<0\|1>` | argos_set_saveradioconf() | Save radio config (deprecated) |
 | `AT+PREPASS_EN=<0\|1>` | argos_set_prepass_enable() | Enable/disable prepass |
-| `AT+LPM=<mode>` | argos_set_lpm() | Set low power mode (0-4) |
+| `AT+LPM=<bitmap>[,<forced>]` | argos_set_lpm() | Set low power mode (hex bitmap, see below) |
 | `AT+MC=<value>` | argos_set_mc() | Set MAC counter |
 | `AT+TCXO_WU=<value>` | argos_set_tcxo_wu() | Set TCXO warmup timer |
 | `AT+KMAC=<profile>` | argos_set_kmac() | Set KMAC profile |
@@ -52,13 +52,27 @@ Write commands use the format `AT+<CMD>=<value>` and return `+<CMD>=OK` or `+<CM
 
 ### LPM Mode Values
 
+The LPM value is a **bitmap**, not a 0..4 index. `AT+LPM` expects the value in
+**hex** (a decimal value such as `AT+LPM=1` is rejected with `+ERROR=1200`).
+
 | Value | Mode | Description |
 |-------|------|-------------|
-| 0 | NONE | No low power |
-| 1 | SLEEP | Sleep mode |
-| 2 | STOP | Stop mode |
-| 3 | STANDBY | Standby mode |
-| 4 | SHUTDOWN | Shutdown mode |
+| 0x00 | NONE | No low power |
+| 0x01 | SLEEP | Sleep mode |
+| 0x02 | STOP | Stop mode |
+| 0x04 | STANDBY | Standby mode |
+| 0x08 | SHUTDOWN | Shutdown mode |
+
+The bitmap alone only sets the **allowed** modes and clears any forced mode, so
+the module never actually enters the deep mode. To **enter** a mode you must
+force it with a second argument:
+
+```
+AT+LPM=0x<bitmap>,0x<forced>
+```
+
+For example `AT+LPM=0x04,0x04` forces STANDBY, while `AT+LPM=0x04` only allows
+STANDBY (forced cleared). Use `0` as the forced value to clear the force.
 
 ### UART DFU Commands
 
@@ -85,7 +99,7 @@ Each transaction is a fixed 64-byte full-duplex SPI exchange.
 The protocol is **pipelined**: the response to a command is received in
 the **next** SPI transaction. Send a NOP (0x00) to retrieve the response.
 
-### Application Commands (0x00 - 0x2B)
+### Application Commands (0x00 - 0x2F)
 
 | Code | Define | API Function | Direction | Description |
 |------|--------|-------------|-----------|-------------|
@@ -133,6 +147,29 @@ the **next** SPI transaction. Send a NOP (0x00) to retrieve the response.
 | 0x29 | `ARGOS_SPI_CMD_WRITE_TCXOWU_REQ` | argos_spi_set_tcxo_wu() | Write | Write TCXO (request) |
 | 0x2A | `ARGOS_SPI_CMD_WRITE_TCXOWU` | argos_spi_set_tcxo_wu() | Write | Write TCXO (data) |
 | 0x2B | `ARGOS_SPI_CMD_READ_RCONF_RAW` | argos_spi_get_rconf_raw() | Read | Raw radio config (16 bytes) |
+| 0x2C | `ARGOS_SPI_CMD_READ_MC` | argos_spi_get_mc() | Read | Message counter (uint16 LE) |
+| 0x2D | `ARGOS_SPI_CMD_WRITE_MC_REQ` | argos_spi_set_mc() | Write | Write message counter (request) |
+| 0x2E | `ARGOS_SPI_CMD_WRITE_MC` | argos_spi_set_mc() | Write | Write message counter (data, mod 512) |
+| 0x2F | `ARGOS_SPI_CMD_READ_KCFG` | argos_spi_get_kcfg() | Read | Stack config bitmap (uint32 LE, read-only) |
+
+### SPI Low Power Mode
+
+LPM over SPI uses the same **bitmap** as the UART `AT+LPM` command
+(NONE=0x00, SLEEP=0x01, STOP=0x02, STANDBY=0x04, SHUTDOWN=0x08).
+
+| API Function | Description |
+|-------------|-------------|
+| argos_spi_get_lpm() | Read the current LPM setting (CMD 0x11) |
+| argos_spi_set_lpm() | Set the allowed-modes bitmap; clears the forced mode (CMD 0x12/0x13) |
+| argos_spi_set_lpm_forced() | Set the bitmap **and** force a mode: `(dev, bitmap, forced)`; `forced=0` clears the force |
+| argos_spi_wakeup_enable() | Drive the WKUP3 wake line (Feather P0.26 -> STM32 PB3) HIGH |
+| argos_spi_wakeup_disable() | Drive the WKUP3 wake line LOW |
+
+As on the UART side, `argos_spi_set_lpm(bitmap)` only sets the allowed mask and
+clears the forced mode, so the module never enters the deep mode. To enter a
+mode, force it with `argos_spi_set_lpm_forced(dev, bitmap, forced)`. STANDBY
+(0x04) and SHUTDOWN (0x08) wake on a **rising edge** of WKUP3 (a held HIGH does
+not wake); SHUTDOWN over SPI additionally requires NRST.
 
 ### SPI Write Sequence
 
