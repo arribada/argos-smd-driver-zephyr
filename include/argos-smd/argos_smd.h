@@ -10,6 +10,23 @@
 extern "C" {
 #endif
 
+/**
+ * @defgroup uart_api UART AT Command API
+ * @brief UART interface for Argos SMD module configuration and data transmission.
+ *
+ * This API communicates with the Argos SMD module via UART at 9600 baud using
+ * AT commands. It provides functions for:
+ * - Reading module information (version, address, ID, serial number, etc.)
+ * - Configuring module parameters (radio config, low power mode, KMAC, etc.)
+ * - Sending satellite uplink payloads
+ * - Managing the wakeup GPIO for low power mode
+ *
+ * All read commands are asynchronous: they send the AT command and the response
+ * is delivered via the registered callback function.
+ *
+ * @{
+ */
+
 #define ARGOS_SMD_BUF_SIZE 255
 
 typedef enum {
@@ -21,6 +38,7 @@ typedef enum {
 	AT_SECKEY,
 	AT_SN,
 	AT_RCONF,
+	AT_RCONFRAW,
 	AT_SAVE_RCONF,
 	AT_LPM,
 	AT_MC,
@@ -104,8 +122,12 @@ int argos_set_radioconf(const struct device *dev, const char *rconf);
 
 /**
  * @brief Sets the save radio configuration of the Argos SMD.
+ *
+ * @deprecated Radio configuration is now saved automatically to flash.
+ * This function is kept for backward compatibility but may be removed in a future version.
+ *
  * This function sends the command "AT+SAVE_RCONF=<saveconf>" to configure the device's radio
- * settings. This function is not required anymore should be deleted
+ * settings.
  *
  * @param dev Pointer to the device structure.
  * @param saveconf Boolean 1 to save
@@ -128,7 +150,10 @@ int argos_set_prepass_enable(const struct device *dev, const char *prepass);
  * This function sends the command "AT+LPM=<lpm>" to configure the device.
  *
  * @param dev Pointer to the device structure.
- * @param lpm The LPM mode string to be set. 0 NONE, 1 SLEEP, 2 STOP, 3 STANDBY, 4 SHUTDOWN
+ * @param lpm LPM value as a HEX bitmap string, e.g. "0x2" (NONE=0x00, SLEEP=0x01, STOP=0x02,
+ *            STANDBY=0x04, SHUTDOWN=0x08). Decimal is rejected (+ERROR=1200). The bitmap alone
+ *            sets the allowed mask and clears the forced mode; to force a mode pass
+ *            "0x<bitmap>,0x<forced>" (e.g. "0x4,0x4" to enter STANDBY).
  * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
  */
 int argos_set_lpm(const struct device *dev, const char *lpm);
@@ -175,12 +200,12 @@ int argos_set_udate(const struct device *dev, const char *datetime);
 
 /**
  * @brief Sets the Continuous wave RF test of the Argos SMD.
- * This function sends the command "AT+CW=<cw>" to configure the device.
- * <cw> should be in the format: "<modulation>,<frequency>,<power>,<duration>"
- * <modulation>: 1 = CW, 2 = LDA2, 3 = LDA2L, 4 = VLDA4, 5 = LDK, 6 = HDA4, 0 = NONE
- * <frequency>: Frequency in Hz (e.g., 434000000 for 434 MHz)
- * <power>: Power level in dBm (e.g., 14)
- * <duration>: Duration in milliseconds
+ * This function sends the command "AT+CW=\<cw\>" to configure the device.
+ * \<cw\> should be in the format: "\<modulation\>,\<frequency\>,\<power\>,\<duration\>"
+ * - modulation: 1 = CW, 2 = LDA2, 3 = LDA2L, 4 = VLDA4, 5 = LDK, 6 = HDA4, 0 = NONE
+ * - frequency: Frequency in Hz (e.g., 434000000 for 434 MHz)
+ * - power: Power level in dBm (e.g., 14)
+ * - duration: Duration in milliseconds
  *
  * @param dev Pointer to the device structure.
  * @param cw The continuous wave RF test string to be set.
@@ -242,6 +267,20 @@ int argos_smd_wakeup_enable(const struct device *dev);
  * @return 0 on success, -ENOTSUP if no wakeup GPIO is configured, negative errno on error.
  */
 int argos_smd_wakeup_disable(const struct device *dev);
+
+/**
+ * @brief Change the UART baudrate used to talk to the Argos SMD at runtime.
+ *
+ * Useful when the module's bootloader runs at a different baudrate than the
+ * application (the STM32WL bootloader uses 9600 in UART-DFU mode but 115200
+ * otherwise). Requires CONFIG_UART_USE_RUNTIME_CONFIGURE=y.
+ *
+ * @param dev Pointer to the device structure.
+ * @param baudrate Target baudrate (e.g. 9600 or 115200).
+ * @return 0 on success, negative errno on error (e.g. -ENOSYS if runtime
+ *         reconfigure is not enabled).
+ */
+int argos_smd_set_baudrate(const struct device *dev, uint32_t baudrate);
 
 /**
  * @brief Sends a read AT command to the Argos SMD.
@@ -326,6 +365,17 @@ int argos_read_seckey(const struct device *dev);
 int argos_read_radioconf(const struct device *dev);
 
 /**
+ * @brief Reads the raw radio configuration of the Argos SMD.
+ * This function sends the command "AT+RCONFRAW=?" to the Argos SMD to request
+ * the raw 16 bytes of radio configuration stored in flash (without decoding).
+ * Response format: +RCONFRAW=<32 hex characters>
+ *
+ * @param dev Argos SMD Device pointer
+ * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
+ */
+int argos_read_radioconf_raw(const struct device *dev);
+
+/**
  * @brief Reads the prepass enable variable of the Argos SMD.
  * This function sends the command "AT+PREPASS_EN=?" to the Argos SMD to request its configuration.
  *
@@ -387,6 +437,8 @@ int argos_read_kmac(const struct device *dev);
  * @return 0 if the command was successfully sent, -1 if there was an error in building the command.
  */
 int argos_read_cw(const struct device *dev);
+
+/** @} */ /* end of uart_api */
 
 #ifdef __cplusplus
 }

@@ -1,0 +1,46 @@
+/*
+ * Copyright (c) 2025 Arribada Initiative
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * SPI Command Test overlay for Adafruit Feather nRF52840
+ *
+ * Wiring (Feather -> Argos SMD/STM32):
+ * - SCK  (P0.14) -> SPI_CLK  (STM32 PA1)
+ * - MOSI (P0.13) -> SPI_MOSI (STM32 PB5)
+ * - MISO (P0.15) -> SPI_MISO (STM32 PB4)
+ * - CS   (P0.10) -> SPI_NSS  (STM32 PA15)
+ * - RST  (P0.07) -> NRST     (recommended: wakes the module from SHUTDOWN
+ *                             as a cold boot; the sample uses argos_spi_reset())
+ *
+ * Waking from SHUTDOWN: in SHUTDOWN the STM32WL55 powers down VCORE and the
+ * SPI bus is dead. It can only be woken by NRST (above), by a rising edge on
+ * WKUP3 = STM32 PB3, or by its internal RTC. The reset wire is enough for the
+ * sample. Optionally, to wake WITHOUT a cold boot (preserving module state),
+ * wire Feather D9 (P0.26) -> STM32 PB3/WKUP3 and uncomment wakeup-gpios below;
+ * then call argos_spi_wakeup_enable()/disable() instead of/around the reset.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/* Disable NFC to use P0.09/P0.10 as GPIO */
+&uicr {
+	nfct-pins-as-gpios;
+};
+
+&spi1 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	cs-gpios = <&gpio0 10 GPIO_ACTIVE_LOW>;
+
+	argos_smd: argos-smd@0 {
+		compatible = "arribada,argos-smd-spi";
+		reg = <0>;
+		spi-max-frequency = <125000>;  /* 125 kHz - minimum for nRF52840 */
+		reset-gpios = <&gpio0 7 GPIO_ACTIVE_LOW>;
+
+		/* Optional stateful wake (no cold boot). Requires a physical wire
+		 * Feather D9 (P0.26) -> STM32 PB3/WKUP3. Uncomment to enable:
+		 */
+		/* wakeup-gpios = <&gpio0 26 GPIO_ACTIVE_HIGH>; */
+	};
+};

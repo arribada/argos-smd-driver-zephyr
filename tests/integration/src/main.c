@@ -4,7 +4,7 @@
 
 #include <argos-smd/argos_smd.h>
 
-const struct device *dev = DEVICE_DT_GET_ONE(arribada_argossmd);
+const struct device *dev = DEVICE_DT_GET_ONE(arribada_argos_smd_uart);
 
 #define RESPONSE_BUFFER_SIZE 128
 K_MSGQ_DEFINE(response_msgq, RESPONSE_BUFFER_SIZE, 10, 1);

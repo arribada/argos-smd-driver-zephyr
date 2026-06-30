@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#define DT_DRV_COMPAT arribada_argossmd
+#define DT_DRV_COMPAT arribada_argos_smd_uart
 #define MODULE        argos_smd
 
 #include <stdio.h>
@@ -34,6 +34,7 @@ static const char *command_strings[] = {
 	[AT_SECKEY] = "AT+SECKEY",
 	[AT_SN] = "AT+SN",
 	[AT_RCONF] = "AT+RCONF",
+	[AT_RCONFRAW] = "AT+RCONFRAW",
 	[AT_SAVE_RCONF] = "AT+SAVE_RCONF",
 	[AT_LPM] = "AT+LPM",
 	[AT_MC] = "AT+MC",
@@ -96,12 +97,36 @@ int argos_smd_wakeup_disable(const struct device *dev)
 	return 0;
 }
 
+int argos_smd_set_baudrate(const struct device *dev, uint32_t baudrate)
+{
+	const struct argos_smd_config *cfg = dev->config;
+	struct uart_config uc;
+
+	int ret = uart_config_get(cfg->uart_dev, &uc);
+	if (ret != 0) {
+		LOG_ERR("uart_config_get failed: %d (enable CONFIG_UART_USE_RUNTIME_CONFIGURE)", ret);
+		return ret;
+	}
+
+	if (uc.baudrate == baudrate) {
+		return 0;
+	}
+
+	uc.baudrate = baudrate;
+	ret = uart_configure(cfg->uart_dev, &uc);
+	if (ret != 0) {
+		LOG_ERR("uart_configure(%u) failed: %d", baudrate, ret);
+		return ret;
+	}
+
+	LOG_INF("UART baudrate switched to %u", baudrate);
+	return 0;
+}
+
 static void uart_rx_handler(const struct device *dev, void *dev_smd)
 {
 	const struct device *argos_smd_dev = dev_smd;
 	struct argos_smd_data *drv_data = argos_smd_dev->data;
-
-	argos_smd_callback_t callback = drv_data->callback;
 
 	while (uart_irq_update(dev) && uart_irq_rx_ready(dev)) {
 		uint8_t byte;
@@ -110,30 +135,49 @@ static void uart_rx_handler(const struct device *dev, void *dev_smd)
 			continue;
 		}
 
-		if (byte == '+' && atomic_get(&drv_data->status) == RESPONSE_CLEAR) {
+		/* Detect start of AT response ('+' at beginning of line only)
+		 * This filters out '+' in debug logs like "Received: AT+TX=..."
+		 */
+		if (byte == '\r' || byte == '\n') {
+			drv_data->at_line_start = true;
+		}
+
+		if (byte == '+' && atomic_get(&drv_data->status) == RESPONSE_CLEAR && drv_data->at_line_start) {
 			atomic_set(&drv_data->status, RESPONSE_PENDING);
 			memset(drv_data->response.data, 0, sizeof(drv_data->response.data));
 			drv_data->response.len = 0;
+			drv_data->at_line_start = false;
+		} else if (atomic_get(&drv_data->status) == RESPONSE_CLEAR) {
+			/* Not in a response - only accept '+' at line start */
+			if (byte != '\r' && byte != '\n') {
+				drv_data->at_line_start = false;
+			}
+			continue;
 		}
 
 		if (atomic_get(&drv_data->status) == RESPONSE_PENDING) {
+			/* Check buffer space BEFORE writing to prevent overflow */
+			if (drv_data->response.len >= sizeof(drv_data->response.data) - 1) {
+				atomic_set(&drv_data->status, RESPONSE_FAIL);
+				continue;
+			}
+
 			drv_data->response.len++;
 			size_t index = drv_data->response.len - 1;
 			drv_data->response.data[index] = byte;
 
 			if (byte == '\n' || byte == '\r') {
-				LOG_DBG("Response successfully received");
 				drv_data->response.data[index] = '\0';
 				atomic_set(&drv_data->status, RESPONSE_CLEAR);
+
+				/* Debug: Log when driver completes receiving a line */
+				LOG_DBG("Driver RX complete: [%s]", drv_data->response.data);
+
+				argos_smd_callback_t callback = drv_data->callback;
 				if (callback != NULL) {
 					callback(drv_data->response.data, drv_data->user_data);
 				}
 			}
-		}
-
-		if (drv_data->response.len >= sizeof(drv_data->response.data)) {
-			atomic_set(&drv_data->status, RESPONSE_FAIL);
-			continue;
 		}
 	}
 }
@@ -149,7 +193,12 @@ int send_command(const struct device *dev, uint8_t *command, const uint8_t lengt
 		uart_poll_out(cfg->uart_dev, (char)command[i]);
 	}
 
+	/* Send \r\n terminator. The application AT parser accepts a bare '\r',
+	 * but the STM32WL bootloader requires the full CRLF (the working LinkIt
+	 * v4 host always sends "\r\n"), so emit both.
+	 */
 	uart_poll_out(cfg->uart_dev, '\r');
+	uart_poll_out(cfg->uart_dev, '\n');
 
 	return 0;
 }
@@ -223,6 +272,12 @@ int argos_read_radioconf(const struct device *dev)
 {
 	LOG_INF("Request Argos configuration");
 	return argos_read_command(dev, AT_RCONF);
+}
+
+int argos_read_radioconf_raw(const struct device *dev)
+{
+	LOG_INF("Request Argos raw radio configuration");
+	return argos_read_command(dev, AT_RCONFRAW);
 }
 
 int argos_read_prepass_enable(const struct device *dev)
@@ -432,6 +487,7 @@ static int argos_smd_init(const struct device *dev)
 	argos_smd_uart_flush(dev);
 
 	drv_data->response.len = 0;
+	drv_data->at_line_start = true;  /* Start at beginning of line */
 	atomic_set(&drv_data->status, RESPONSE_CLEAR);
 
 	int ret = uart_irq_callback_user_data_set(cfg->uart_dev, uart_rx_handler, (void *)dev);

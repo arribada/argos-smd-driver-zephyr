@@ -10,7 +10,7 @@
 #define UART_NODE DT_NODELABEL(uart0)
 
 const static struct device *dev = DEVICE_DT_GET(UART_NODE);
-const static struct device *dev_smd = DEVICE_DT_GET_ONE(arribada_argossmd);
+const static struct device *dev_smd = DEVICE_DT_GET_ONE(arribada_argos_smd_uart);
 
 extern void uart_emul_reply(struct k_timer * /*timer_id*/)
 {

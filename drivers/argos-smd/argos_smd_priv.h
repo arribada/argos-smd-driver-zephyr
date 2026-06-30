@@ -21,12 +21,10 @@ extern "C" {
 #define TX_MAX_VLDA4_PAYLOAD_SIZE 24 / 8  // Bytes
 #define TX_MAX_LDK_PAYLOAD_SIZE   152 / 8 // Bytes
 
-// Define all the ways functions can return
+// Response status states
 #define RESPONSE_PENDING 0
-#define ERROR_CMD_LENGTH 1
-#define ERROR_CMD_BUILD  2
-#define RESPONSE_FAIL    3
-#define RESPONSE_CLEAR   4
+#define RESPONSE_CLEAR   1
+#define RESPONSE_FAIL    2
 
 struct argos_smd_buf {
 	char data[ARGOS_SMD_BUF_SIZE];
@@ -36,8 +34,7 @@ struct argos_smd_buf {
 struct argos_smd_data {
 	atomic_t status;
 	struct argos_smd_buf response;
-	bool has_response;
-
+	bool at_line_start;  /* Track line boundaries to filter '+' in debug logs */
 	argos_smd_callback_t callback;
 	void *user_data;
 };

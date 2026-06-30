@@ -8,7 +8,7 @@
 	"onCreateCommand": "bash -c 'west update'",
 	"postStartCommand": "bash",
 	"customizations": {
-		"vscodeu": {
+		"vscode": {
 			"extensions": [
 				"twxs.cmake",
 				"llvm-vs-code-extensions.vscode-clangd",

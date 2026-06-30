@@ -1,0 +1,771 @@
+/*
+ * Copyright (c) 2025 Arribada Initiative
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#ifndef ARGOS_SMD_SPI_H
+#define ARGOS_SMD_SPI_H
+
+#include <zephyr/device.h>
+#include <zephyr/drivers/spi.h>
+#include <zephyr/drivers/gpio.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * @file argos_smd_spi.h
+ * @brief Argos SMD SPI Protocol A+ Interface
+ */
+
+/**
+ * @defgroup spi_api SPI Protocol A+ API
+ * @brief SPI interface for Argos SMD module configuration and data transmission.
+ *
+ * This API communicates with the Argos SMD module via SPI using the Protocol A+
+ * binary framing at 125 kHz. It provides functions for:
+ * - Reading module information (version, address, ID, serial number, etc.)
+ * - Configuring module parameters (radio config, low power mode, KMAC, etc.)
+ * - Sending satellite uplink payloads with TX completion polling
+ * - Hardware reset and SPI bus diagnostics
+ *
+ * ### Protocol A+ Frame Format
+ *
+ * Each SPI transaction is a fixed 64-byte full-duplex exchange:
+ *
+ * | Field | Size | Description |
+ * |-------|------|-------------|
+ * | MAGIC | 1 | 0xAA (request) or 0x55 (response) |
+ * | SEQ | 1 | Sequence number |
+ * | CMD/STATUS | 1 | Command (request) or status code (response) |
+ * | LEN | 1 | Payload length (0-250) |
+ * | DATA | 0-250 | Payload data |
+ * | CRC | 1 | CRC-8 CCITT checksum |
+ *
+ * The protocol is pipelined: the response to a command arrives in the
+ * **next** SPI transaction. Send a NOP (0x00) to retrieve the response.
+ *
+ * @{
+ */
+
+/* Protocol A+ Magic Bytes */
+#define ARGOS_SPI_MAGIC_REQUEST   0xAA
+#define ARGOS_SPI_MAGIC_RESPONSE  0x55
+
+/* Maximum payload size */
+#define ARGOS_SPI_MAX_PAYLOAD     250
+
+/* Frame header size (magic + seq + cmd/status + len) */
+#define ARGOS_SPI_HEADER_SIZE     4
+
+/* CRC size */
+#define ARGOS_SPI_CRC_SIZE        1
+
+/* Maximum frame size */
+#define ARGOS_SPI_MAX_FRAME_SIZE  (ARGOS_SPI_HEADER_SIZE + ARGOS_SPI_MAX_PAYLOAD + ARGOS_SPI_CRC_SIZE)
+
+/*
+ * Pipelined Protocol Constants
+ * Each SPI transaction is fixed 64 bytes (full-duplex)
+ * Master sends command, receives response to PREVIOUS command
+ * For immediate response, send CMD then NOP
+ */
+#define ARGOS_SPI_TRANSACTION_SIZE    64    /* Fixed transaction size */
+#define ARGOS_SPI_IDLE_PATTERN        0xAA  /* Idle byte pattern from slave */
+#define ARGOS_SPI_BUSY_PATTERN        0xBB  /* Busy byte pattern (processing) */
+
+/*
+ * Unified Timing Constants (Bootloader + Application)
+ * At 125kHz, 64-byte transaction takes ~4ms.
+ * STM32 needs: transaction(4ms) + detection(10ms) + processing(5ms) = ~20ms
+ * Use 30ms for safe margin.
+ */
+#define ARGOS_TIMING_STANDARD_MS      30    /* Standard commands */
+#define ARGOS_TIMING_WRITE_MS         100   /* Flash write: up to 50ms write + 10ms detect + margin */
+#define ARGOS_TIMING_ERASE_MS         3000  /* CRITICAL! Flash erase */
+#define ARGOS_TIMING_RESET_MS         100   /* Reset/jump commands */
+#define ARGOS_TIMING_POLL_MS          500   /* Polling interval (increased to avoid SPI conflicts during RF TX) */
+
+/* Legacy timing aliases */
+#define ARGOS_SPI_PIPELINE_DELAY_MS   ARGOS_TIMING_STANDARD_MS
+#define ARGOS_SPI_FLASH_DELAY_MS      200   /* Threshold (>= this => blind window + poll path) */
+/* For long ops the slave is busy and must NOT be disturbed by SPI traffic while
+ * it works (a flash NVM program, or the TX handler busy-waiting the >=2s TCXO
+ * warmup with IRQs on — polling it then corrupts/stalls it). So we wait QUIETLY
+ * for (timeout - ARGOS_SPI_POLL_WINDOW_MS), then poll the ACK during the trailing
+ * window, bounded by the timeout. The blind part therefore scales with the op. */
+#define ARGOS_SPI_POLL_WINDOW_MS      500   /* trailing poll window before the timeout */
+#define ARGOS_SPI_FLASH_WRITE_TIMEOUT_MS 700 /* NVM write/save total: ~200ms blind + poll */
+
+/* Inter-transaction delays (internal use) */
+#define ARGOS_SPI_INTER_TX_DELAY_MS   15    /* Wait for STM32 DMA re-arm between transactions */
+#define ARGOS_SPI_MIN_TX_SPACING_MS   8     /* Min gap enforced between ANY two NSS cycles. The
+                                             * module SPI slave needs ~3ms of RX silence to detect
+                                             * end-of-transaction, then aborts + re-arms its RX DMA;
+                                             * a transaction clocked into that unarmed window causes
+                                             * an OVR/desync that wedges the slave (muet, MISO=0xFF,
+                                             * only a power-cycle recovers). Spacing every transaction
+                                             * keeps us out of that window. Host-side mitigation for
+                                             * the slave's back-to-back fragility (firmware adds a
+                                             * recovery watchdog separately). */
+#define ARGOS_SPI_RETRY_DELAY_MS      50    /* Delay between command retries */
+#define ARGOS_SPI_BOOT_DELAY_MS       500   /* Wait for module boot after reset */
+#define ARGOS_SPI_DETECT_TIMEOUT_MS   10    /* SPI activity detection timeout */
+#define ARGOS_SPI_POST_TX_DELAY_MS    100   /* Delay after TX for async processing */
+/* WRITE_TX (0x16) data phase: the module's handler ACKs into its TX buffer but
+ * then BLOCKS in HAL_Delay(tcxo_warmup) — >=2000ms per the module PROJECT_RULES —
+ * before returning, and the SPI DMA that exposes the ACK is only re-armed AFTER
+ * the handler returns. The driver POLLS the response NOP until the ACK appears
+ * (returning as soon as it does) and uses this as the safety timeout; it also
+ * absorbs the busy window so later commands don't fail. */
+#define ARGOS_SPI_TX_ACK_TIMEOUT_MS   3000  /* poll timeout: TCXO warmup (>=2000ms) + MAC push + margin */
+
+/*
+ * Application Commands (0x00-0x2A)
+ */
+#define ARGOS_SPI_CMD_NOP               0x00  /* No operation (get previous response) */
+#define ARGOS_SPI_CMD_READ              0x01  /* Generic read */
+#define ARGOS_SPI_CMD_PING              0x02  /* Ping */
+#define ARGOS_SPI_CMD_MAC_STATUS        0x03  /* MAC status */
+#define ARGOS_SPI_CMD_SPI_STATUS        0x04  /* SPI status */
+#define ARGOS_SPI_CMD_READ_VERSION      0x05  /* Firmware version */
+#define ARGOS_SPI_CMD_READ_FIRMWARE     0x06  /* Firmware detailed info */
+#define ARGOS_SPI_CMD_READ_ADDR         0x07  /* Device address */
+#define ARGOS_SPI_CMD_READ_ID           0x08  /* Device ID */
+#define ARGOS_SPI_CMD_READ_SN           0x09  /* Serial number */
+#define ARGOS_SPI_CMD_READ_RCONF        0x0A  /* Radio configuration */
+#define ARGOS_SPI_CMD_WRITE_RCONF_REQ   0x0B  /* Write radio config request */
+#define ARGOS_SPI_CMD_WRITE_RCONF       0x0C  /* Write radio config */
+#define ARGOS_SPI_CMD_SAVE_RCONF        0x0D  /* Save radio config to NVM */
+#define ARGOS_SPI_CMD_READ_KMAC         0x0E  /* KMAC profile */
+#define ARGOS_SPI_CMD_WRITE_KMAC_REQ    0x0F  /* Write KMAC request */
+#define ARGOS_SPI_CMD_WRITE_KMAC        0x10  /* Write KMAC */
+#define ARGOS_SPI_CMD_READ_LPM          0x11  /* Low power mode config */
+#define ARGOS_SPI_CMD_WRITE_LPM_REQ     0x12  /* Write LPM request */
+#define ARGOS_SPI_CMD_WRITE_LPM         0x13  /* Write LPM */
+#define ARGOS_SPI_CMD_WRITE_TX_REQ      0x14  /* TX uplink request */
+#define ARGOS_SPI_CMD_WRITE_TX_SIZE     0x15  /* TX size (uint16) */
+#define ARGOS_SPI_CMD_WRITE_TX          0x16  /* TX data */
+#define ARGOS_SPI_CMD_READ_CW           0x17  /* CW params */
+#define ARGOS_SPI_CMD_WRITE_CW_REQ      0x18  /* Write CW request */
+#define ARGOS_SPI_CMD_WRITE_CW          0x19  /* Write CW */
+#define ARGOS_SPI_CMD_READ_PREPASSEN    0x1A  /* Prepass status */
+#define ARGOS_SPI_CMD_WRITE_PREPASSEN_REQ 0x1B /* Write prepass request */
+#define ARGOS_SPI_CMD_WRITE_PREPASSEN   0x1C  /* Write prepass */
+#define ARGOS_SPI_CMD_READ_UDATE        0x1D  /* UTC date/time */
+#define ARGOS_SPI_CMD_WRITE_UDATE_REQ   0x1E  /* Write date request */
+#define ARGOS_SPI_CMD_WRITE_UDATE       0x1F  /* Write date */
+#define ARGOS_SPI_CMD_WRITE_ID_REQ      0x20  /* Write ID request */
+#define ARGOS_SPI_CMD_WRITE_ID          0x21  /* Write ID */
+#define ARGOS_SPI_CMD_WRITE_ADDR_REQ    0x22  /* Write address request */
+#define ARGOS_SPI_CMD_WRITE_ADDR        0x23  /* Write address */
+#define ARGOS_SPI_CMD_READ_SECKEY       0x24  /* Secret key */
+#define ARGOS_SPI_CMD_WRITE_SECKEY_REQ  0x25  /* Write secret key request */
+#define ARGOS_SPI_CMD_WRITE_SECKEY      0x26  /* Write secret key */
+#define ARGOS_SPI_CMD_READ_SPIMAC_STATE 0x27  /* SPI MAC state */
+#define ARGOS_SPI_CMD_READ_TCXO_WU      0x28  /* TCXO wake-up */
+#define ARGOS_SPI_CMD_WRITE_TCXOWU_REQ  0x29  /* Write TCXO request */
+#define ARGOS_SPI_CMD_WRITE_TCXOWU      0x2A  /* Write TCXO */
+#define ARGOS_SPI_CMD_READ_RCONF_RAW    0x2B  /* Raw radio config (16 bytes from flash) */
+#define ARGOS_SPI_CMD_READ_MC           0x2C  /* Read message counter (uint16 LE) */
+#define ARGOS_SPI_CMD_WRITE_MC_REQ      0x2D  /* Write message counter request */
+#define ARGOS_SPI_CMD_WRITE_MC          0x2E  /* Write message counter (uint16 LE, mod 512) */
+#define ARGOS_SPI_CMD_READ_KCFG         0x2F  /* Read stack config bitmap (uint32 LE, read-only) */
+
+/*
+ * DFU Bootloader Commands (0x30-0x3F)
+ */
+#define ARGOS_SPI_DFU_CMD_PING          0x30  /* Ping bootloader */
+#define ARGOS_SPI_DFU_CMD_GET_INFO      0x31  /* Bootloader info (version, memory) */
+#define ARGOS_SPI_DFU_CMD_ERASE         0x32  /* Erase application zone */
+#define ARGOS_SPI_DFU_CMD_WRITE_REQ     0x33  /* Write request (address+size) */
+#define ARGOS_SPI_DFU_CMD_WRITE_DATA    0x34  /* Write flash chunk */
+#define ARGOS_SPI_DFU_CMD_READ_REQ      0x35  /* Read request (address+size) */
+#define ARGOS_SPI_DFU_CMD_READ_DATA     0x36  /* Read flash */
+#define ARGOS_SPI_DFU_CMD_VERIFY        0x37  /* Verify CRC32 */
+#define ARGOS_SPI_DFU_CMD_RESET         0x38  /* Reset device */
+#define ARGOS_SPI_DFU_CMD_JUMP          0x39  /* Jump to application */
+#define ARGOS_SPI_DFU_CMD_GET_STATUS    0x3A  /* DFU session status */
+#define ARGOS_SPI_DFU_CMD_ABORT         0x3B  /* Abort DFU session */
+#define ARGOS_SPI_DFU_CMD_SET_HEADER    0x3C  /* Set application header */
+#define ARGOS_SPI_CMD_DFU_ENTER         0x3F  /* Enter DFU mode (from app) */
+
+/**
+ * @brief Unified Protocol Status Codes (Bootloader + Application)
+ *
+ * Single enum for all protocol responses. Standard codes 0x00-0x0F,
+ * protocol-specific codes 0x10+.
+ */
+enum argos_protocol_status {
+	/* Standard status codes (0x00-0x0F) */
+	PROT_OK              = 0x00,  /* Success */
+	PROT_ERROR           = 0x01,  /* Generic error */
+	PROT_CRC_ERROR       = 0x02,  /* CRC mismatch (data) */
+	PROT_ADDR_ERROR      = 0x03,  /* Invalid address */
+	PROT_SIZE_ERROR      = 0x04,  /* Invalid size */
+	PROT_FLASH_ERROR     = 0x05,  /* Flash failed */
+	PROT_BUSY            = 0x06,  /* Retry later */
+	PROT_INVALID_CMD     = 0x07,  /* Unknown command */
+	PROT_TIMEOUT         = 0x08,  /* Timeout */
+	PROT_NOT_READY       = 0x09,  /* Prerequisite missing */
+	PROT_INVALID_HEADER  = 0x0A,  /* Bad header */
+	PROT_VERIFY_ERROR    = 0x0B,  /* Verification failed */
+	/* Protocol-specific (0x10+) */
+	PROT_FRAME_CRC_ERROR = 0x10,  /* Frame CRC - RESEND */
+	PROT_SEQ_ERROR       = 0x11,  /* Sequence mismatch */
+	PROT_FRAME_ERROR     = 0x12,  /* Malformed frame */
+};
+
+/**
+ * @brief MAC Status (Application only - via CMD 0x03)
+ *
+ * Returned when querying MAC status after TX operations.
+ * Use argos_is_tx_complete() and argos_is_tx_failed() to check result.
+ *
+ * Mapping from KNS_MAC events:
+ * - KNS_MAC_TX_DONE      → MAC_TX_DONE (0x02)
+ * - KNS_MAC_TXACK_DONE   → MAC_TXACK_DONE (0x04)
+ * - KNS_MAC_TX_TIMEOUT   → MAC_TX_TIMEOUT (0x05)
+ * - KNS_MAC_RX_RECEIVED/DL_BC/DL_ACK → MAC_RX_RECEIVED (0x0B)
+ */
+enum argos_mac_status {
+	MAC_UNKNOWN       = 0x00,
+	MAC_OK            = 0x01,  /* Ready */
+	MAC_TX_DONE       = 0x02,  /* TX Success! */
+	MAC_TX_SIZE_ERROR = 0x03,
+	MAC_TXACK_DONE    = 0x04,  /* TX+ACK Success! */
+	MAC_TX_TIMEOUT    = 0x05,  /* TX Failed - timeout */
+	MAC_TXACK_TIMEOUT = 0x06,  /* TX ACK Failed - timeout */
+	MAC_RX_ERROR      = 0x07,  /* RX Failed */
+	MAC_RX_TIMEOUT    = 0x08,  /* RX Failed - timeout */
+	MAC_ERROR         = 0x09,  /* Generic error */
+	MAC_TX_IN_PROGRESS = 0x0A, /* TX queued, poll until done */
+	MAC_RX_RECEIVED   = 0x0B,  /* RX data available (DL_BC, DL_ACK) */
+	MAC_SAT_DETECTED  = 0x0C,  /* Satellite detected */
+	MAC_SAT_LOST      = 0x0D,  /* Satellite lost */
+	MAC_RF_ABORTED    = 0x0E,  /* RF operation aborted */
+};
+
+/**
+ * @brief Check if error is recoverable (should retry)
+ *
+ * @param status Protocol status code
+ * @return true if BUSY or FRAME_CRC_ERROR (should retry)
+ */
+static inline bool argos_is_recoverable(uint8_t status)
+{
+	return (status == PROT_BUSY || status == PROT_FRAME_CRC_ERROR);
+}
+
+/**
+ * @brief Check if TX completed successfully
+ *
+ * @param mac_status MAC status from CMD 0x03
+ * @return true if TX_DONE or TXACK_DONE
+ */
+static inline bool argos_is_tx_complete(uint8_t mac_status)
+{
+	return (mac_status == MAC_TX_DONE || mac_status == MAC_TXACK_DONE);
+}
+
+/**
+ * @brief Check if TX failed
+ *
+ * @param mac_status MAC status from CMD 0x03
+ * @return true if TX timed out or errored
+ */
+static inline bool argos_is_tx_failed(uint8_t mac_status)
+{
+	return (mac_status == MAC_TX_TIMEOUT || mac_status == MAC_TXACK_TIMEOUT ||
+		mac_status == MAC_RX_ERROR || mac_status == MAC_ERROR);
+}
+
+/**
+ * @brief Check if TX is in progress (should continue polling)
+ *
+ * @param mac_status MAC status from CMD 0x03
+ * @return true if TX_IN_PROGRESS
+ */
+static inline bool argos_is_tx_pending(uint8_t mac_status)
+{
+	return (mac_status == MAC_TX_IN_PROGRESS);
+}
+
+/* Legacy alias for backward compatibility (used by samples) */
+#define ARGOS_SPI_RSP_OK          PROT_OK
+
+/**
+ * @brief SPI Protocol A+ Frame Format (both Request and Response)
+ *
+ * Request:  | MAGIC (0xAA) | SEQ | CMD    | LEN | DATA[0..LEN-1] | CRC8 |
+ * Response: | MAGIC (0x55) | SEQ | STATUS | LEN | DATA[0..LEN-1] | CRC8 |
+ *           |    1 byte    |  1  |   1    |  1  |    0-250       |   1  |
+ *
+ * Note: The driver uses raw uint8_t buffers internally. This struct is
+ * provided for documentation and type-safe response parsing.
+ */
+
+/**
+ * @brief SPI Protocol A+ Response Frame
+ *
+ * | MAGIC (0x55) | SEQ | STATUS | LEN | DATA[0..LEN-1] | CRC8 |
+ * |    1 byte    |  1  |   1    |  1  |    0-250       |   1  |
+ */
+struct argos_spi_response {
+	uint8_t magic;
+	uint8_t seq;
+	uint8_t status;
+	uint8_t len;
+	uint8_t data[ARGOS_SPI_MAX_PAYLOAD];
+	uint8_t crc;
+};
+
+/**
+ * @brief Argos SMD SPI device configuration
+ */
+struct argos_spi_config {
+	struct spi_dt_spec spi;
+	struct gpio_dt_spec irq_gpio;    /* Optional: interrupt/ready pin */
+	struct gpio_dt_spec reset_gpio;  /* Optional: reset pin */
+	struct gpio_dt_spec wakeup_gpio; /* Optional: wake pin (STM32 PB3/WKUP3) */
+};
+
+/**
+ * @brief Argos SMD SPI device data
+ */
+struct argos_spi_data {
+	uint8_t seq_num;                 /* Current sequence number (app mode) */
+	uint8_t dfu_seq_num;             /* DFU sequence number (bootloader mode) */
+	uint8_t tx_buf[ARGOS_SPI_TRANSACTION_SIZE];
+	uint8_t rx_buf[ARGOS_SPI_TRANSACTION_SIZE];
+	struct k_mutex lock;
+};
+
+/**
+ * @brief Calculate CRC-8 CCITT checksum
+ *
+ * Uses polynomial 0x07 (x^8 + x^2 + x + 1)
+ *
+ * @param data Pointer to data buffer
+ * @param len Length of data in bytes
+ * @return CRC-8 checksum value
+ */
+uint8_t argos_spi_crc8_ccitt(const uint8_t *data, size_t len);
+
+/**
+ * @brief Initialize Argos SMD SPI interface
+ *
+ * @param dev Pointer to device structure
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_init(const struct device *dev);
+
+/**
+ * @brief Send command and receive response via SPI Protocol A+
+ *
+ * Builds a Protocol A+ frame with the given command and payload,
+ * sends it via SPI, and waits for a response frame.
+ *
+ * @param dev Pointer to device structure
+ * @param cmd Command byte (0x00-0x3F)
+ * @param tx_data Pointer to payload data (can be NULL if tx_len is 0)
+ * @param tx_len Length of payload data
+ * @param rx_data Buffer to receive response data (can be NULL)
+ * @param rx_len Pointer to receive response data length
+ * @param status Pointer to receive response status code
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_transact(const struct device *dev, uint8_t cmd,
+		       const uint8_t *tx_data, size_t tx_len,
+		       uint8_t *rx_data, size_t *rx_len, uint8_t *status);
+
+/**
+ * @brief Send command without waiting for response
+ *
+ * Useful for commands that cause a reset (e.g., DFU_ENTER)
+ *
+ * @param dev Pointer to device structure
+ * @param cmd Command byte
+ * @param tx_data Pointer to payload data (can be NULL)
+ * @param tx_len Length of payload data
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_send_only(const struct device *dev, uint8_t cmd,
+			const uint8_t *tx_data, size_t tx_len);
+
+/**
+ * @brief Ping the device (application mode)
+ *
+ * @param dev Pointer to device structure
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_ping(const struct device *dev);
+
+/**
+ * @brief Get firmware version
+ *
+ * @param dev Pointer to device structure
+ * @param version Buffer to receive version string (at least 32 bytes)
+ * @param version_len Pointer to version buffer length
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_version(const struct device *dev, char *version, size_t *version_len);
+
+/**
+ * @brief Perform hardware reset of the Argos SMD module
+ *
+ * Uses the reset GPIO (if configured) to perform a hardware reset.
+ * The reset signal is held for 50ms, then the function waits 500ms
+ * for the module to boot.
+ *
+ * @param dev Pointer to device structure
+ * @return 0 on success, -ENOTSUP if reset GPIO not configured,
+ *         negative errno on GPIO failure
+ */
+int argos_spi_reset(const struct device *dev);
+
+/**
+ * @brief Wake the Argos SMD module from SHUTDOWN low-power mode
+ *
+ * Drives the wakeup GPIO (if configured) HIGH. In SHUTDOWN the STM32WL55
+ * powers down its VCORE domain and can only be woken by a rising edge on
+ * WKUP3 = STM32 PB3 (or by NRST/RTC). Wire the configured GPIO to STM32 PB3
+ * and call this before communicating with a module that may be asleep. Unlike
+ * argos_spi_reset(), this resumes the module without a cold boot, preserving
+ * its RAM state. Keep the pin HIGH while communicating, then call
+ * argos_spi_wakeup_disable() to allow the module back into low power.
+ *
+ * @param dev Pointer to device structure
+ * @return 0 on success, -ENOTSUP if wakeup GPIO not configured,
+ *         negative errno on GPIO failure
+ */
+int argos_spi_wakeup_enable(const struct device *dev);
+
+/**
+ * @brief Release the wakeup GPIO (drive it LOW)
+ *
+ * Counterpart to argos_spi_wakeup_enable(). Drives the wakeup GPIO LOW so the
+ * module is allowed to re-enter low power mode.
+ *
+ * @param dev Pointer to device structure
+ * @return 0 on success, -ENOTSUP if wakeup GPIO not configured,
+ *         negative errno on GPIO failure
+ */
+int argos_spi_wakeup_disable(const struct device *dev);
+
+/**
+ * @brief Run SPI diagnostic test
+ *
+ * Performs a diagnostic check of the SPI bus and module communication.
+ * Outputs detailed information about GPIO states, TX/RX data, and
+ * analysis of potential issues.
+ *
+ * @param dev Pointer to device structure
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_diagnostic(const struct device *dev);
+
+/*
+ * High-level API functions (like UART driver)
+ * These wrap the low-level SPI protocol details.
+ */
+
+/**
+ * @brief Get device serial number
+ *
+ * @param dev Pointer to device structure
+ * @param sn Buffer to receive serial number string (null-terminated)
+ * @param sn_len Pointer to buffer size, updated with actual length
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_sn(const struct device *dev, char *sn, size_t *sn_len);
+
+/**
+ * @brief Get device ID
+ *
+ * @param dev Pointer to device structure
+ * @param id Buffer to receive device ID (4 bytes)
+ * @param id_len Pointer to buffer size, updated with actual length
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_id(const struct device *dev, uint8_t *id, size_t *id_len);
+
+/**
+ * @brief Set device ID
+ *
+ * @param dev Pointer to device structure
+ * @param id Device ID to set (4 bytes)
+ * @param id_len Length of ID data
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_set_id(const struct device *dev, const uint8_t *id, size_t id_len);
+
+/**
+ * @brief Get device address
+ *
+ * @param dev Pointer to device structure
+ * @param addr Buffer to receive address (4 bytes)
+ * @param addr_len Pointer to buffer size, updated with actual length
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_addr(const struct device *dev, uint8_t *addr, size_t *addr_len);
+
+/**
+ * @brief Set device address
+ *
+ * @param dev Pointer to device structure
+ * @param addr Address to set (4 bytes)
+ * @param addr_len Length of address data
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_set_addr(const struct device *dev, const uint8_t *addr, size_t addr_len);
+
+/**
+ * @brief Get device secret key
+ *
+ * @param dev Pointer to device structure
+ * @param key Buffer to receive secret key
+ * @param key_len Pointer to buffer size, updated with actual length
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_secret_key(const struct device *dev, uint8_t *key, size_t *key_len);
+
+/**
+ * @brief Set device secret key (16 bytes for encryption)
+ *
+ * @param dev Pointer to device structure
+ * @param key Secret key data to write
+ * @param key_len Length of secret key (typically 16 bytes)
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_set_secret_key(const struct device *dev, const uint8_t *key, size_t key_len);
+
+/**
+ * @brief Get radio configuration
+ *
+ * @param dev Pointer to device structure
+ * @param rconf Buffer to receive radio config
+ * @param rconf_len Pointer to buffer size, updated with actual length
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_rconf(const struct device *dev, uint8_t *rconf, size_t *rconf_len);
+
+/**
+ * @brief Set radio configuration (CMD 0x25 + 0x26)
+ *
+ * @param dev Pointer to device structure
+ * @param rconf Radio config data to write (encrypted Kineis config block)
+ * @param rconf_len Length of radio config (16 bytes for valid Kineis RCONF)
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_set_rconf(const struct device *dev, const uint8_t *rconf, size_t rconf_len);
+
+/**
+ * @brief Get KMAC profile value
+ *
+ * @param dev Pointer to device structure
+ * @param kmac Pointer to receive KMAC value
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_kmac(const struct device *dev, uint8_t *kmac);
+
+/**
+ * @brief Set KMAC profile value
+ *
+ * @param dev Pointer to device structure
+ * @param kmac KMAC value to set (e.g., 1 for profile 1)
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_set_kmac(const struct device *dev, uint8_t kmac);
+
+/**
+ * @brief Get MAC status (CMD 0x03)
+ *
+ * @param dev Pointer to device structure
+ * @param mac_status Pointer to receive MAC status (enum argos_mac_status)
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_mac_status(const struct device *dev, uint8_t *mac_status);
+
+/**
+ * @brief Get SPI MAC state (CMD 0x27)
+ *
+ * Returns internal SPI MAC state for debugging.
+ *
+ * @param dev Pointer to device structure
+ * @param state Buffer to receive state (2 bytes minimum)
+ * @param state_len Pointer to buffer size, updated with actual length
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_spimac_state(const struct device *dev, uint8_t *state, size_t *state_len);
+
+/**
+ * @brief Wait for TX completion after CMD_WRITE_TX (0x16)
+ *
+ * Polls MAC status (CMD 0x03) until TX_DONE/TXACK_DONE or error.
+ * Use this after sending data with argos_spi_write_tx().
+ *
+ * @param dev Pointer to device structure
+ * @param timeout Timeout for polling
+ * @return 0 on success (TX_DONE/TXACK_DONE), -EIO on TX error, -ETIMEDOUT
+ */
+int argos_spi_wait_tx_complete(const struct device *dev, k_timeout_t timeout);
+
+/**
+ * @brief Send TX data (uplink message)
+ *
+ * Sequence: CMD_WRITE_TX_REQ (0x14) → CMD_WRITE_TX_SIZE (0x15) → CMD_WRITE_TX (0x16)
+ * After success, use argos_spi_wait_tx_complete() to poll for TX result.
+ *
+ * @param dev Pointer to device structure
+ * @param data TX payload data
+ * @param len Length of payload (max 250 bytes)
+ * @return 0 on success (TX queued), negative errno on failure
+ */
+int argos_spi_write_tx(const struct device *dev, const uint8_t *data, size_t len);
+
+/**
+ * @brief Synchronize with STM32 slave after master restart
+ *
+ * Call this function at the start of communication to ensure the STM32
+ * slave is in a known state. This is especially important after the
+ * master restarts without resetting the STM32.
+ *
+ * The function sends several dummy transactions to:
+ * 1. Flush any pending data in STM32 DMA buffers
+ * 2. Reset the protocol state on both sides
+ * 3. Ensure sequence number alignment
+ *
+ * @param dev Pointer to device structure
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_sync(const struct device *dev);
+
+/**
+ * @brief Get low power mode setting
+ *
+ * @param dev Pointer to device structure
+ * @param lpm Pointer to receive the LPM bitmap (NONE=0x00, SLEEP=0x01, STOP=0x02,
+ *            STANDBY=0x04, SHUTDOWN=0x08)
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_lpm(const struct device *dev, uint8_t *lpm);
+
+/**
+ * @brief Set the allowed low-power-mode bitmap (clears the forced mode)
+ *
+ * @param dev Pointer to device structure
+ * @param lpm Allowed-modes LPM bitmap (NONE=0x00, SLEEP=0x01, STOP=0x02, STANDBY=0x04,
+ *            SHUTDOWN=0x08). This sets the allowed mask and clears the forced mode, so it
+ *            does not enter a deep mode by itself — use argos_spi_set_lpm_forced() for that.
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_set_lpm(const struct device *dev, uint8_t lpm);
+
+/**
+ * @brief Set low power mode with an explicit forced mode (WRITE_LPM [bitmap,forced])
+ *
+ * The LPM value is a BITMAP: SLEEP=0x01, STOP=0x02, STANDBY=0x04, SHUTDOWN=0x08.
+ * Sending only the bitmap (argos_spi_set_lpm) clears the forced mode, so the
+ * module never actually enters the deep mode; this sends [bitmap, forced] so the
+ * mode is allowed AND forced. forced=0 clears the force.
+ *
+ * @param dev Pointer to device structure
+ * @param bitmap Allowed-modes bitmap (e.g. 0x04 for STANDBY)
+ * @param forced Mode to force now (e.g. 0x04), or 0 to clear
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_set_lpm_forced(const struct device *dev, uint8_t bitmap, uint8_t forced);
+
+/**
+ * @brief Get TCXO warmup timer value
+ *
+ * @param dev Pointer to device structure
+ * @param tcxo_wu Buffer to receive TCXO warmup value
+ * @param tcxo_len Pointer to buffer size, updated with actual length
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_tcxo_wu(const struct device *dev, uint8_t *tcxo_wu, size_t *tcxo_len);
+
+/**
+ * @brief Set TCXO warmup timer value
+ *
+ * @param dev Pointer to device structure
+ * @param tcxo_wu TCXO warmup value data
+ * @param tcxo_len Length of TCXO data
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_set_tcxo_wu(const struct device *dev, const uint8_t *tcxo_wu, size_t tcxo_len);
+
+/**
+ * @brief Save radio configuration to NVM
+ *
+ * Persists the current radio configuration to non-volatile memory.
+ *
+ * @param dev Pointer to device structure
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_save_rconf(const struct device *dev);
+
+/**
+ * @brief Get raw radio configuration (16 bytes directly from flash)
+ *
+ * Unlike argos_spi_get_rconf() which returns the decoded KNS_CFG_radio_t
+ * structure (12 bytes), this function returns the raw 16 bytes stored
+ * in flash without any decoding.
+ *
+ * @param dev Pointer to device structure
+ * @param rconf_raw Buffer to receive raw radio config (16 bytes minimum)
+ * @param rconf_len Pointer to buffer size, updated with actual length (16)
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_rconf_raw(const struct device *dev, uint8_t *rconf_raw, size_t *rconf_len);
+
+/**
+ * @brief Read the message counter (MC).
+ *
+ * SPI equivalent of the UART AT+MC query. Returns the current 9-bit message
+ * counter (0..511).
+ *
+ * @param dev Pointer to device structure
+ * @param mc Pointer to receive the message counter (uint16)
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_mc(const struct device *dev, uint16_t *mc);
+
+/**
+ * @brief Write the message counter (MC).
+ *
+ * SPI equivalent of the UART AT+MC set. The value is folded into the 9-bit
+ * protocol range (mod 512) by the module. Uses the 2-phase REQ/WRITE protocol.
+ *
+ * @param dev Pointer to device structure
+ * @param mc Message counter value to set
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_set_mc(const struct device *dev, uint16_t mc);
+
+/**
+ * @brief Read the stack configuration bitmap (KCFG).
+ *
+ * SPI equivalent of the UART AT+KCFG query. Read-only (bit0 = L1 TX-period
+ * timer suspended, bit1 = resumed). There is no SPI write for KCFG.
+ *
+ * @param dev Pointer to device structure
+ * @param kcfg Pointer to receive the config bitmap (uint32)
+ * @return 0 on success, negative errno on failure
+ */
+int argos_spi_get_kcfg(const struct device *dev, uint32_t *kcfg);
+
+/** @} */ /* end of spi_api */
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* ARGOS_SMD_SPI_H */

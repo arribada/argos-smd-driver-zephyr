@@ -1,1 +1,4 @@
-add_subdirectory_ifdef(CONFIG_ARGOS_SMD argos-smd)
+# Add argos-smd directory if driver is enabled (UART or SPI)
+if(CONFIG_ARGOS_SMD)
+    add_subdirectory(argos-smd)
+endif()

@@ -1,7 +1,11 @@
 description: |
-  Argos SMD module for Up link communication. SMD as a coprocesor over serial.
+  Argos SMD module UART interface.
 
-compatible: "arribada,argossmd"
+  Provides UART communication with Argos SMD modules using AT commands.
+  Supports all standard AT commands for configuration, data transmission,
+  and device firmware update (DFU).
+
+compatible: "arribada,argos-smd-uart"
 
 include: [base.yaml, uart-device.yaml]
 

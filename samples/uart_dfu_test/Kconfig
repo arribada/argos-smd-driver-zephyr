@@ -1,0 +1,34 @@
+# Copyright (c) 2025 Arribada Initiative
+# SPDX-License-Identifier: Apache-2.0
+
+mainmenu "Argos SMD OTA Test Configuration"
+
+source "Kconfig.zephyr"
+
+config ARGOS_OTA_TEST_FULL_UPDATE
+	bool "Enable full OTA update test"
+	default n
+	help
+	  Enable the full OTA update test which will attempt to perform a
+	  real firmware update on the device. This test will enter bootloader
+	  mode, transfer the complete test firmware, and finalize the update.
+	  WARNING: This will actually update the device firmware!
+
+config ARGOS_OTA_TEST_STRESS
+	bool "Enable OTA stress tests"
+	default n
+	help
+	  Enable stress tests that perform multiple consecutive OTA updates.
+	  This is useful for testing reliability and finding edge cases.
+	  These tests take longer to complete.
+
+config ARGOS_OTA_FIRMWARE_FILE
+	string "Path to firmware file for OTA testing"
+	default ""
+	help
+	  Path to a binary firmware file to use for OTA testing.
+	  If not specified, a built-in test firmware will be used.
+
+	  Example: /path/to/firmware.bin
+
+	  The file will be converted to a C array at build time.

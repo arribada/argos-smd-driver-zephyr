@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
+list(APPEND DTS_ROOT ${CMAKE_CURRENT_LIST_DIR}/../..)
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 
 project(host LANGUAGES C)
